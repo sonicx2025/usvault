@@ -148,6 +148,8 @@ with db() as _c:
     ):
         if _col not in _rcols:
             _c.execute(f"ALTER TABLE records ADD COLUMN {_col} {_ddl}")
+    if "assist" not in {r[1] for r in _c.execute("PRAGMA table_info(field_defs)")}:
+        _c.execute("ALTER TABLE field_defs ADD COLUMN assist TEXT DEFAULT 'auto'")
     _c.execute("CREATE INDEX IF NOT EXISTS idx_records_series ON records(series_id)")
     _c.execute("CREATE INDEX IF NOT EXISTS idx_records_followup ON records(followup_status, followup_date)")
 
@@ -307,6 +309,11 @@ def field_row(r) -> dict:
     d["options"] = json.loads(d.get("options") or "[]")
     for k in ("show_in_card", "filterable", "active"):
         d[k] = bool(d[k])
+    assist = d.get("assist") or "auto"
+    d["assist"] = assist
+    d["pathology_assist"] = (d["type"] in ("text", "textarea")) and (
+        assist == "pathology" or (assist == "auto" and "病理" in d["label"])
+    )
     return d
 
 
@@ -392,6 +399,8 @@ def field_payload(body: dict, partial=False) -> dict:
     for k in ("show_in_card", "filterable", "active"):
         if k in body:
             d[k] = 1 if body[k] else 0
+    if "pathology_assist" in body:
+        d["assist"] = "pathology" if body["pathology_assist"] else "none"
     return d
 
 
@@ -1094,9 +1103,30 @@ def meta():
         builtin = builtin_settings(conn)
         custom = load_fields(conn, active_only=True)
         fu = followup_summary(conn)
+        path_keys = [f["key"] for f in custom if f.get("pathology_assist")]
+        path_hist = []
+        if path_keys:
+            seen = set()
+            for row in conn.execute("SELECT body_part, extra FROM records ORDER BY id DESC LIMIT 500"):
+                ex = parse_extra(row["extra"])
+                bp = row["body_part"] or ""
+                for pk in path_keys:
+                    raw = ex.get(pk)
+                    if not isinstance(raw, str) or not raw.strip():
+                        continue
+                    for part in re.split(r"[,，;；\n、]+", raw):
+                        val = part.strip()
+                        if 1 < len(val) <= 60 and (bp, val) not in seen:
+                            seen.add((bp, val))
+                            path_hist.append({"body_part": bp, "val": val})
+                            if len(path_hist) >= 150:
+                                break
+                if len(path_hist) >= 150:
+                    break
     return {"body_parts": parts, "tags": tags, "stats": stats,
             "fields": {"builtin": builtin, "custom": custom},
             "followup": fu,
+            "pathology_history": path_hist,
             "video_thumbs": bool(FFMPEG), "transcode": bool(H264_ENC),
             "version": os.environ.get("APP_VERSION", "dev")}
 

@@ -1,4 +1,5 @@
 :root {
+  color-scheme: dark;
   --bg: #0b1220;
   --panel: #111a2e;
   --panel2: #17223a;
@@ -225,6 +226,26 @@ label.check input { width: 16px; height: 16px; margin: 0; accent-color: var(--ac
 .link-res { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; max-height: 220px; overflow-y: auto; }
 .link-opt { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 10px;
   border-radius: 8px; border: 1px solid var(--line); background: var(--panel); }
+
+/* WHO 病理输入联想 */
+.ac-wrap { position: relative; }
+.ac-hint { font-size: 11.5px; color: var(--muted); margin-top: 4px; }
+.ac-menu { position: absolute; left: 0; right: 0; top: 100%; margin-top: 4px; z-index: 60;
+  background: var(--panel2); border: 1px solid var(--accent); border-radius: 10px;
+  box-shadow: 0 12px 28px rgba(0,0,0,.55); max-height: 280px; overflow-y: auto; }
+.ac-head { position: sticky; top: 0; padding: 6px 10px; font-size: 11.5px; color: var(--muted);
+  background: var(--panel); border-bottom: 1px solid var(--line); }
+.ac-item { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 8px 10px; cursor: pointer; font-size: 13.5px; border-bottom: 1px solid rgba(36,49,77,.45); }
+.ac-item:last-child { border-bottom: 0; }
+.ac-item:hover, .ac-item.on { background: rgba(56,189,248,.16); color: #fff; }
+.ac-tags { display: flex; gap: 4px; flex-shrink: 0; }
+.ac-cat { font-size: 11px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.ac-cat.benign { color: #86efac; border-color: rgba(34,197,94,.4); background: rgba(34,197,94,.12); }
+.ac-cat.malig { color: #fda4af; border-color: rgba(244,63,94,.45); background: rgba(244,63,94,.14); }
+.ac-cat.border { color: #fcd34d; border-color: rgba(245,158,11,.45); background: rgba(245,158,11,.14); }
+.ac-cat.inflam { color: #7dd3fc; border-color: rgba(56,189,248,.4); background: rgba(56,189,248,.12); }
+.ac-cat.biopsy { color: #d8b4fe; border-color: rgba(192,132,252,.45); background: rgba(192,132,252,.14); }
 
 @media (max-width: 600px) {
   .fu-row { flex-wrap: wrap; }

@@ -4,7 +4,7 @@
 const $ = (s, el = document) => el.querySelector(s);
 const app = $('#app');
 const DEFAULT_PARTS = ['甲状腺', '乳腺', '肝脏', '胆囊', '胰腺', '脾脏', '肾脏', '膀胱', '前列腺',
-  '子宫附件', '产科', '心脏', '颈部血管', '下肢血管', '浅表淋巴结', '肌骨', '阴囊', '其他'];
+  '子宫附件', '产科', '心脏', '颈部血管', '下肢血管', '浅表淋巴结', '腮腺', '颌下腺', '肌骨', '阴囊', '其他'];
 let META = { body_parts: [], tags: [], stats: {} };
 let DEFAULT_PW = false;
 const EMPTY_LIST = { q: '', date_from: '', date_to: '', body_part: '', tag: '', kind: '', followup: '', page: 1, cf: {} };
@@ -182,8 +182,11 @@ function cfInput(f, v) {
   const opts = [...f.options];
   if (f.type === 'select' && v && !opts.includes(v)) opts.push(v);
   if (f.type === 'multiselect') (v || []).forEach((x) => !opts.includes(x) && opts.push(x));
+  const wrapPath = (html) => f.pathology_assist
+    ? `<div class="ac-wrap" data-path-ac="1" data-biopsy="${/穿刺|fna|cnb|细胞/i.test(f.label) ? '1' : '0'}">${html}<div class="ac-hint"></div></div>`
+    : html;
   switch (f.type) {
-    case 'textarea': return `<textarea name="${n}">${esc(v || '')}</textarea>`;
+    case 'textarea': return wrapPath(`<textarea name="${n}" autocomplete="off"${f.pathology_assist ? ' placeholder="输入中文或拼音首字母（如 xw、ptc）联想 WHO 病理类型，也可自由输入"' : ''}>${esc(v || '')}</textarea>`);
     case 'number': return `<div class="unit-wrap"><input type="number" step="any" name="${n}" value="${esc(v ?? '')}">${f.unit ? `<span>${esc(f.unit)}</span>` : ''}</div>`;
     case 'date': return `<input type="date" name="${n}" value="${esc(v || '')}">`;
     case 'select': return `<select name="${n}"><option value="">—</option>${opts.map((o) =>
@@ -191,8 +194,126 @@ function cfInput(f, v) {
     case 'multiselect': return `<div class="checks">${opts.map((o) =>
       `<label class="check"><input type="checkbox" name="${n}" value="${esc(o)}" ${(v || []).includes(o) ? 'checked' : ''}>${esc(o)}</label>`).join('') || '<span class="muted">（未设置选项）</span>'}</div>`;
     case 'checkbox': return `<label class="check"><input type="checkbox" name="${n}" value="1" ${v ? 'checked' : ''}>是</label>`;
-    default: return `<input name="${n}" value="${esc(v || '')}">`;
+    default: return wrapPath(`<input name="${n}" value="${esc(v || '')}" autocomplete="off"${f.pathology_assist ? ' placeholder="输入中文或拼音首字母（如 xw）联想 WHO 病理类型"' : ''}>`);
   }
+}
+
+// ------------------------------------------------------------ WHO 病理输入联想组件
+const AC_CAT_CLS = { '良性': 'benign', '恶性': 'malig', '交界': 'border', '炎性': 'inflam', '穿刺': 'biopsy' };
+
+function bindPathologyACs(container, getBodyPart, opts = {}) {
+  const engine = window.USV_PATHOLOGY;
+  if (!engine) return { refreshHints() {} };
+  const wraps = [...container.querySelectorAll('.ac-wrap[data-path-ac]')];
+  const controllers = wraps.map((wrap) => {
+    const el = wrap.querySelector('input, textarea');
+    const hint = wrap.querySelector('.ac-hint');
+    const isBiopsy = wrap.dataset.biopsy === '1';
+    const menu = document.createElement('div');
+    menu.className = 'ac-menu';
+    menu.hidden = true;
+    wrap.appendChild(menu);
+
+    let items = [], idx = -1, curOrgan = '', picking = false;
+
+    const updateHint = () => {
+      if (!hint) return;
+      const org = engine.matchOrgan(getBodyPart());
+      hint.textContent = org
+        ? `已匹配「${org}」WHO 病理词库 · 支持中文 / 拼音首字母 / 缩写（逗号或回车后可继续联想）`
+        : '选择「检查部位」后自动匹配该器官 WHO 病理词库 · 支持中文 / 拼音首字母检索';
+    };
+
+    const tokenRange = () => {
+      const pos = el.selectionStart ?? el.value.length;
+      const before = el.value.slice(0, pos);
+      const m = before.match(/[,，;；\n、](?!.*[,，;；\n、])/);
+      const start = m ? m.index + 1 : 0;
+      return { start, end: pos, token: el.value.slice(start, pos).trim() };
+    };
+
+    const close = () => { menu.hidden = true; idx = -1; };
+
+    const pick = (i) => {
+      const it = items[i];
+      if (!it) return;
+      const { start, end } = tokenRange();
+      const leadSpace = el.value.slice(start, end).match(/^\s*/)[0];
+      const inserted = leadSpace + it.name;
+      const nextVal = el.value.slice(0, start) + inserted + el.value.slice(end);
+      el.value = nextVal;
+      const caret = start + inserted.length;
+      picking = true;
+      el.focus();
+      el.setSelectionRange(caret, caret);
+      close();
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      picking = false;
+    };
+
+    const highlight = () => {
+      menu.querySelectorAll('.ac-item').forEach((n, i) => {
+        const on = i === idx;
+        n.classList.toggle('on', on);
+        if (on) n.scrollIntoView({ block: 'nearest' });
+      });
+    };
+
+    const render = () => {
+      const { token } = tokenRange();
+      const res = engine.search(token, getBodyPart(), {
+        isBiopsy,
+        history: META.pathology_history || [],
+      });
+      items = res.items;
+      curOrgan = res.organ;
+      if (!items.length) return close();
+      idx = token ? 0 : -1;
+      const head = curOrgan
+        ? `「${esc(curOrgan)}」WHO 病理提示${token ? '' : '（点击或输入拼音首字母筛选）'}`
+        : '全部器官 WHO 病理提示（先选检查部位可自动限定器官）';
+      menu.innerHTML = `<div class="ac-head">${head}</div>` + items.map((it, i) => `
+        <div class="ac-item ${i === idx ? 'on' : ''}" data-i="${i}">
+          <span>${esc(it.name)}</span>
+          <span class="ac-tags">
+            ${it.organ && it.organ !== curOrgan ? `<span class="ac-cat">${esc(it.organ)}</span>` : ''}
+            ${it.cat ? `<span class="ac-cat ${AC_CAT_CLS[it.cat] || ''}">${esc(it.cat)}</span>` : ''}
+          </span>
+        </div>`).join('');
+      menu.hidden = false;
+    };
+
+    menu.addEventListener('mousedown', (e) => {
+      const row = e.target.closest('.ac-item');
+      if (!row) return;
+      e.preventDefault();
+      pick(+row.dataset.i);
+    });
+
+    el.addEventListener('focus', () => {
+      if (picking) return;
+      updateHint();
+      if (!opts.onlyOnInput || el.value.trim() || getBodyPart()) render();
+    });
+    el.addEventListener('input', () => { if (!picking) render(); });
+    el.addEventListener('blur', () => setTimeout(close, 150));
+    el.addEventListener('keydown', (e) => {
+      if (menu.hidden) return;
+      if (e.key === 'ArrowDown') { e.preventDefault(); idx = (idx + 1) % items.length; highlight(); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); idx = (idx - 1 + items.length) % items.length; highlight(); }
+      else if (e.key === 'Enter' && idx >= 0) { e.preventDefault(); pick(idx); }
+      else if (e.key === 'Escape') { e.preventDefault(); close(); }
+    });
+
+    updateHint();
+    return {
+      refresh() {
+        updateHint();
+        if (document.activeElement === el) render();
+      },
+    };
+  });
+  return { refreshHints: () => controllers.forEach((c) => c.refresh()) };
 }
 function collectExtra(fd) {
   const extra = {};
@@ -222,7 +343,9 @@ function cfFilter(f, cf) {
         <span>~</span><input type="${t}" name="${id}_max" value="${val(id + '_max')}" placeholder="最大"></div></div>`;
     }
     default:
-      return `<div>${lab}<input name="${id}" value="${val(id)}" placeholder="包含…" data-debounce></div>`;
+      return f.pathology_assist
+        ? `<div>${lab}<div class="ac-wrap" data-path-ac="1" data-biopsy="${/穿刺|fna|cnb|细胞/i.test(f.label) ? '1' : '0'}"><input name="${id}" value="${val(id)}" placeholder="中文或拼音首字母…" autocomplete="off" data-debounce></div></div>`
+        : `<div>${lab}<input name="${id}" value="${val(id)}" placeholder="包含…" data-debounce></div>`;
   }
 }
 
@@ -289,6 +412,8 @@ async function viewList() {
     s.page = 1; loadPage(true);
   }));
   $('#resetBtn').onclick = () => { listState = { ...EMPTY_LIST, q: s.q, cf: {} }; viewList(); };
+  const acList = bindPathologyACs(form, () => form.body_part?.value || '', { onlyOnInput: true });
+  if (form.body_part) form.body_part.addEventListener('change', () => acList.refreshHints());
   $('#moreBtn').onclick = () => { s.page++; loadPage(false); };
   await loadPage(true);
 }
@@ -396,6 +521,11 @@ async function viewForm(rec, fromId = null) {
 
   const form = $('#recForm');
   bindQuickDates($('#fuPanel'), form.followup_date, () => form.exam_date.value || today());
+  const acForm = bindPathologyACs(form, () => form.body_part?.value || '');
+  if (form.body_part) {
+    form.body_part.addEventListener('input', () => acForm.refreshHints());
+    form.body_part.addEventListener('change', () => acForm.refreshHints());
+  }
   const picked = isEdit ? null : bindDropzone();
   form.onsubmit = async (e) => {
     e.preventDefault();
@@ -871,7 +1001,7 @@ async function viewSettings() {
               ${f.active ? '' : '<span class="pill warn-pill">已停用</span>'}</div>
             <div class="muted" style="font-size:12.5px">
               ${[f.options.length ? '选项：' + f.options.join(' / ') : '', f.unit ? '单位：' + f.unit : '',
-                 f.filterable ? '可筛选' : '', f.show_in_card ? '卡片显示' : ''].filter(Boolean).map(esc).join(' · ')}</div>
+                 f.pathology_assist ? 'WHO 病理联想' : '', f.filterable ? '可筛选' : '', f.show_in_card ? '卡片显示' : ''].filter(Boolean).map(esc).join(' · ')}</div>
           </div>
           <div class="fact">
             <button class="btn sm" data-act="edit">编辑</button>
@@ -952,6 +1082,7 @@ function fieldEditor(f) {
         <div class="full">
           <label class="check"><input type="checkbox" name="filterable" ${f.filterable ? 'checked' : ''}>在检索页显示为筛选条件</label>
           <label class="check"><input type="checkbox" name="show_in_card" ${f.show_in_card ? 'checked' : ''}>在列表卡片上显示</label>
+          <label class="check path-field"><input type="checkbox" name="pathology_assist" ${f.pathology_assist ? 'checked' : ''}>启用 WHO 病理词库联想（按检查部位自动匹配，支持拼音首字母）</label>
         </div>
         ${isNew ? '' : '<div class="full muted" style="font-size:12.5px" id="typeWarn" hidden>⚠️ 修改类型后，已有记录中不符合新类型的值可能显示异常。</div>'}
       </div>
@@ -976,7 +1107,13 @@ function fieldEditor(f) {
     const t = form.type.value;
     form.querySelector('.opt-field').hidden = !['select', 'multiselect'].includes(t);
     form.querySelector('.unit-field').hidden = t !== 'number';
+    form.querySelector('.path-field').hidden = !['text', 'textarea'].includes(t);
     const w = $('#typeWarn'); if (w) w.hidden = t === f.type;
+  };
+  let pathTouched = !isNew;
+  form.pathology_assist.onchange = () => (pathTouched = true);
+  form.label.oninput = () => {
+    if (!pathTouched) form.pathology_assist.checked = /病理/.test(form.label.value);
   };
   form.type.onchange = syncType; syncType();
   $('#cancelField').onclick = () => (box.innerHTML = '');
@@ -987,6 +1124,7 @@ function fieldEditor(f) {
       label: form.label.value, type: form.type.value, unit: form.unit.value,
       options: inputs.map((i) => i.value.trim()).filter(Boolean),
       filterable: form.filterable.checked, show_in_card: form.show_in_card.checked,
+      pathology_assist: ['text', 'textarea'].includes(form.type.value) && form.pathology_assist.checked,
     };
     if (['select', 'multiselect'].includes(body.type) && !body.options.length) return toast('请至少填写一个选项');
     if (!isNew) {
