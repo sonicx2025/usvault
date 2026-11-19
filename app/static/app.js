@@ -7,7 +7,7 @@ const DEFAULT_PARTS = ['甲状腺', '乳腺', '肝脏', '胆囊', '胰腺', '脾
   '子宫附件', '产科', '心脏', '颈部血管', '下肢血管', '浅表淋巴结', '腮腺', '颌下腺', '肌骨', '阴囊', '其他'];
 let META = { body_parts: [], tags: [], stats: {} };
 let DEFAULT_PW = false;
-const EMPTY_LIST = { q: '', date_from: '', date_to: '', body_part: '', hospital: '', tag: '', kind: '', followup: '', page: 1, cf: {} };
+const EMPTY_LIST = { q: '', date_from: '', date_to: '', body_part: '', hospital: '', biopsy_pathology: '', surgery_pathology: '', tag: '', kind: '', followup: '', page: 1, cf: {} };
 let listState = { ...EMPTY_LIST, cf: {} };
 let filtersOpen = false;
 
@@ -460,7 +460,7 @@ function cfFilter(f, cf) {
 // ------------------------------------------------------------ 列表 / 检索
 function activeFilterCount(s) {
   let n = 0;
-  for (const k of ['date_from', 'date_to', 'body_part', 'hospital', 'kind', 'followup']) if (s[k]) n++;
+  for (const k of ['date_from', 'date_to', 'body_part', 'hospital', 'biopsy_pathology', 'surgery_pathology', 'kind', 'followup']) if (s[k]) n++;
   n += Object.keys(s.cf).length;
   return n;
 }
@@ -511,6 +511,8 @@ async function viewList() {
           <div><label>随访</label><select name="followup">
             ${fuOpts.map(([v, t]) => `<option value="${v}" ${v === s.followup ? 'selected' : ''}>${t}</option>`).join('')}
           </select></div>
+          ${bh('biopsy_pathology') ? '' : `<div><label>${bl('biopsy_pathology')}</label><div class="ac-wrap" data-path-ac="1" data-biopsy="1"><input name="biopsy_pathology" value="${esc(s.biopsy_pathology)}" placeholder="中文或拼音首字母…" autocomplete="off" data-debounce></div></div>`}
+          ${bh('surgery_pathology') ? '' : `<div><label>${bl('surgery_pathology')}</label><div class="ac-wrap" data-path-ac="1" data-biopsy="0"><input name="surgery_pathology" value="${esc(s.surgery_pathology)}" placeholder="中文或拼音首字母…" autocomplete="off" data-debounce></div></div>`}
           ${cfs.map((f) => cfFilter(f, s.cf)).join('')}
         </div>
         <div style="margin-top:10px" id="resetWrap" hidden><button type="button" class="btn sm ghost" id="resetBtn">${ico('x', 'sm')} 清除筛选条件</button></div>
@@ -540,7 +542,7 @@ async function viewList() {
   };
   const apply = () => {
     const fd = new FormData(form);
-    for (const k of ['q', 'date_from', 'date_to', 'body_part', 'hospital', 'kind', 'followup']) s[k] = (fd.get(k) || '').trim();
+    for (const k of ['q', 'date_from', 'date_to', 'body_part', 'hospital', 'biopsy_pathology', 'surgery_pathology', 'kind', 'followup']) s[k] = (fd.get(k) || '').trim();
     s.cf = {};
     for (const [k, v] of fd.entries()) if (/^cf\d+/.test(k) && String(v).trim()) s.cf[k] = String(v).trim();
     const n = activeFilterCount(s);
@@ -580,7 +582,7 @@ async function loadPage(reset) {
       ${META.stats.records ? '没有找到匹配的记录' : '还没有记录，点击右上角「新建记录」开始吧'}</div>`;
   $('#resultInfo').textContent = `找到 ${d.total} 条`;
   const rw = $('#resetWrap');
-  if (rw) rw.hidden = !(s.date_from || s.date_to || s.body_part || s.hospital || s.tag || s.kind || s.followup || Object.keys(s.cf).length);
+  if (rw) rw.hidden = !(s.date_from || s.date_to || s.body_part || s.hospital || s.biopsy_pathology || s.surgery_pathology || s.tag || s.kind || s.followup || Object.keys(s.cf).length);
   $('#moreBtn').hidden = d.page * d.page_size >= d.total;
 }
 
@@ -588,10 +590,13 @@ function cardHtml(r) {
   const vis = (k) => (bh(k) ? '' : r[k]);
   const title = vis('title') || vis('diagnosis') || vis('body_part') || '未命名记录';
   const sub = [r.exam_date, vis('body_part'), vis('patient_name'), vis('hospital')].filter(Boolean).join(' · ');
-  const extra = CF().filter((f) => f.show_in_card).map((f) => {
+  const pathLine = [!bh('surgery_pathology') && r.surgery_pathology && `${BF('surgery_pathology').label}：${r.surgery_pathology}`,
+    !bh('biopsy_pathology') && !r.surgery_pathology && r.biopsy_pathology && `${BF('biopsy_pathology').label}：${r.biopsy_pathology}`].filter(Boolean).join('');
+  const extraParts = [pathLine && esc(pathLine), ...CF().filter((f) => f.show_in_card).map((f) => {
     const v = fmtVal(f, r.extra[f.key]);
     return v ? `${esc(f.label)}：${esc(v)}` : '';
-  }).filter(Boolean).join(' · ');
+  })].filter(Boolean);
+  const extra = extraParts.join(' · ');
   const fu = r.followup_status === 'pending' ? fuInfo(r) : null;
   return `<a class="card" href="#/r/${r.id}">
     <div class="cover ${r.cover ? '' : 'empty'}">
@@ -634,8 +639,8 @@ async function viewForm(rec, fromId = null) {
   app.innerHTML = `
     <div class="page-head"><h2>${isEdit ? '编辑记录' : (src ? '录入复查记录' : '新建记录')}</h2></div>
     ${src ? `<div class="ref-box">
-      <div><strong>🕒 关联前次检查：</strong>${esc(src.exam_date)} · ${esc(src.title || src.body_part || '未命名记录')} ${src.patient_name ? `(${esc(src.patient_name)})` : ''}</div>
-      ${src.diagnosis || srcExtra ? `<div class="ref-sub">${esc([src.diagnosis && '上次诊断：' + src.diagnosis, srcExtra].filter(Boolean).join('\n'))}</div>` : ''}
+      <div><strong>${ico('clock', 'sm')} 关联前次检查：</strong>${esc(src.exam_date)} · ${esc(src.title || src.body_part || '未命名记录')} ${src.patient_name ? `(${esc(src.patient_name)})` : ''}</div>
+      ${src.diagnosis || src.biopsy_pathology || src.surgery_pathology || srcExtra ? `<div class="ref-sub">${esc([src.diagnosis && '上次诊断：' + src.diagnosis, src.biopsy_pathology && '穿刺病理：' + src.biopsy_pathology, src.surgery_pathology && '手术病理：' + src.surgery_pathology, srcExtra].filter(Boolean).join('\n'))}</div>` : ''}
       ${src.followup_note ? `<div class="ref-sub">随访重点：${esc(src.followup_note)}</div>` : ''}
       <div class="ref-sub">保存后将自动加入同一随访时间线，并把前次待随访计划标记为「已完成」。</div>
     </div>` : ''}
@@ -652,6 +657,8 @@ async function viewForm(rec, fromId = null) {
         ${fld('sex', `<select name="sex">${['', '男', '女'].map((x) => `<option ${x === r.sex ? 'selected' : ''} value="${x}">${x || '—'}</option>`).join('')}</select>`)}
         ${fld('age', `<input name="age" value="${v('age')}" placeholder="如：45">`)}
         ${fld('diagnosis', `<textarea name="diagnosis" placeholder="如：TI-RADS 4a 类">${v('diagnosis')}</textarea>`, 'full')}
+        ${fld('biopsy_pathology', `<div class="ac-wrap" data-path-ac="1" data-biopsy="1"><textarea name="biopsy_pathology" autocomplete="off" placeholder="输入中文或拼音首字母（如 b5、xw、ptc）联想 WHO 病理类型">${v('biopsy_pathology')}</textarea><div class="ac-hint"></div></div>`, 'full')}
+        ${fld('surgery_pathology', `<div class="ac-wrap" data-path-ac="1" data-biopsy="0"><textarea name="surgery_pathology" autocomplete="off" placeholder="输入中文或拼音首字母（如 xw、rt、idc）联想 WHO 病理类型">${v('surgery_pathology')}</textarea><div class="ac-hint"></div></div>`, 'full')}
         ${fld('tags', `<input name="tags" list="dlTags" value="${esc((r.tags || []).join(', '))}" placeholder="逗号或空格分隔，如：典型病例, 教学, 造影">`, 'full')}
         ${fld('notes', `<textarea name="notes">${v('notes')}</textarea>`, 'full')}
       </div>
@@ -784,6 +791,8 @@ async function viewDetail(id) {
     <div class="panel meta-grid">
       ${row('检查日期', r.exam_date)}${brow('body_part', r.body_part)}${brow('hospital', r.hospital)}${row('患者', patient)}${brow('patient_id', r.patient_id)}
       ${brow('diagnosis', r.diagnosis, true)}
+      ${brow('biopsy_pathology', r.biopsy_pathology, true)}
+      ${brow('surgery_pathology', r.surgery_pathology, true)}
       ${CF().map((f) => row(f.label, fmtVal(f, r.extra[f.key]), ['textarea', 'multiselect'].includes(f.type))).join('')}
       ${!bh('tags') && r.tags.length ? `<div class="full"><div class="k">${bl('tags')}</div><div class="tagrow">${r.tags.map((t) => `<span class="tag">#${esc(t)}</span>`).join('')}</div></div>` : ''}
       ${brow('notes', r.notes, true)}
@@ -922,6 +931,8 @@ async function viewDetail(id) {
 function renderTimelinePanel(cur, series) {
   const cfs = CF();
   const activeCfs = cfs.filter((f) => series.some((s) => fmtVal(f, s.extra[f.key])));
+  const hasBiopsy = !bh('biopsy_pathology') && series.some((s) => s.biopsy_pathology);
+  const hasSurgery = !bh('surgery_pathology') && series.some((s) => s.surgery_pathology);
   const hasNotes = series.some((s) => s.notes);
   const thumbStrip = (s) => s.files.length ? `<div class="tl-thumbs">${s.files.slice(0, 6).map((f, i) => `
     <div class="tl-th" data-rid="${s.id}" data-fi="${i}" ${f.thumb ? `style="background-image:url('${f.thumb}')"` : ''}>
@@ -967,6 +978,8 @@ function renderTimelinePanel(cur, series) {
         <tbody>
           <tr><td class="k">标题 / 部位</td>${series.map((s) => `<td>${esc([s.title, s.body_part].filter(Boolean).join(' · ') || '—')}</td>`).join('')}</tr>
           <tr><td class="k">${bl('diagnosis')}</td>${series.map((s) => `<td style="white-space:pre-wrap">${esc(s.diagnosis || '—')}</td>`).join('')}</tr>
+          ${hasBiopsy ? `<tr><td class="k">${bl('biopsy_pathology')}</td>${series.map((s) => `<td style="white-space:pre-wrap">${esc(s.biopsy_pathology || '—')}</td>`).join('')}</tr>` : ''}
+          ${hasSurgery ? `<tr><td class="k">${bl('surgery_pathology')}</td>${series.map((s) => `<td style="white-space:pre-wrap">${esc(s.surgery_pathology || '—')}</td>`).join('')}</tr>` : ''}
           ${activeCfs.map((f) => `<tr><td class="k">${esc(f.label)}</td>${series.map((s) => `<td><strong>${esc(fmtVal(f, s.extra[f.key]) || '—')}</strong></td>`).join('')}</tr>`).join('')}
           ${hasNotes ? `<tr><td class="k">${bl('notes')}</td>${series.map((s) => `<td style="white-space:pre-wrap">${esc(s.notes || '—')}</td>`).join('')}</tr>` : ''}
           <tr><td class="k">影像</td>${series.map((s) => `<td>${thumbStrip(s) || '<span class="muted">无</span>'}</td>`).join('')}</tr>

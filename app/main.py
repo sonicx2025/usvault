@@ -111,7 +111,7 @@ CREATE INDEX IF NOT EXISTS idx_tags_tag ON record_tags(tag);
 """
 
 RECORD_FIELDS = ["exam_date", "title", "body_part", "hospital", "patient_name", "patient_id",
-                 "sex", "age", "diagnosis", "notes"]
+                 "sex", "age", "diagnosis", "biopsy_pathology", "surgery_pathology", "notes"]
 
 
 @contextmanager
@@ -140,6 +140,8 @@ with db() as _c:
     for _col, _ddl in (
         ("extra", "TEXT DEFAULT '{}'"),
         ("hospital", "TEXT DEFAULT ''"),
+        ("biopsy_pathology", "TEXT DEFAULT ''"),
+        ("surgery_pathology", "TEXT DEFAULT ''"),
         ("series_id", "TEXT DEFAULT ''"),
         ("followup_date", "TEXT DEFAULT ''"),
         ("followup_note", "TEXT DEFAULT ''"),
@@ -151,6 +153,24 @@ with db() as _c:
             _c.execute(f"ALTER TABLE records ADD COLUMN {_col} {_ddl}")
     if "assist" not in {r[1] for r in _c.execute("PRAGMA table_info(field_defs)")}:
         _c.execute("ALTER TABLE field_defs ADD COLUMN assist TEXT DEFAULT 'auto'")
+    # 若此前手动建过名为「穿刺病理」「手术病理」的自定义字段，自动迁入内置列并去重
+    for _lbl, _col in (("穿刺病理", "biopsy_pathology"), ("手术病理", "surgery_pathology")):
+        for _fd in _c.execute("SELECT id FROM field_defs WHERE label=?", (_lbl,)).fetchall():
+            _key = f"f{_fd['id']}"
+            for _r in _c.execute(f"SELECT id, {_col}, extra FROM records WHERE extra IS NOT NULL").fetchall():
+                try:
+                    _ex = json.loads(_r["extra"] or "{}")
+                except Exception:
+                    continue
+                if _key in _ex:
+                    _val = _ex.pop(_key)
+                    if isinstance(_val, list):
+                        _val = "、".join(str(x) for x in _val if x)
+                    _val = str(_val or "").strip()
+                    _new_col = _r[_col] or _val
+                    _c.execute(f"UPDATE records SET {_col}=?, extra=? WHERE id=?",
+                               (_new_col, json.dumps(_ex, ensure_ascii=False), _r["id"]))
+            _c.execute("DELETE FROM field_defs WHERE id=?", (_fd["id"],))
     _c.execute("CREATE INDEX IF NOT EXISTS idx_records_hospital ON records(hospital)")
     _c.execute("CREATE INDEX IF NOT EXISTS idx_records_series ON records(series_id)")
     _c.execute("CREATE INDEX IF NOT EXISTS idx_records_followup ON records(followup_status, followup_date)")
@@ -302,7 +322,9 @@ FIELD_TYPES = {"text", "textarea", "number", "date", "select", "multiselect", "c
 # 内置字段：可以改显示名称、可以隐藏（检查日期固定不可隐藏）
 BUILTIN_FIELDS = [("title", "标题"), ("body_part", "检查部位"), ("hospital", "医院"),
                   ("patient_name", "患者姓名"), ("patient_id", "患者ID"), ("sex", "性别"),
-                  ("age", "年龄"), ("diagnosis", "超声诊断 / 提示"), ("tags", "标签"), ("notes", "备注")]
+                  ("age", "年龄"), ("diagnosis", "超声诊断 / 提示"),
+                  ("biopsy_pathology", "穿刺病理"), ("surgery_pathology", "手术病理"),
+                  ("tags", "标签"), ("notes", "备注")]
 
 
 def field_row(r) -> dict:
@@ -719,6 +741,8 @@ def series_records(conn, series_id: str) -> List[dict]:
             "hospital": r["hospital"] or "",
             "patient_name": r["patient_name"],
             "diagnosis": r["diagnosis"],
+            "biopsy_pathology": r["biopsy_pathology"] or "",
+            "surgery_pathology": r["surgery_pathology"] or "",
             "notes": r["notes"],
             "extra": parse_extra(r["extra"]),
             "followup_date": r["followup_date"] or "",
@@ -770,13 +794,15 @@ def trash_file(rel_path: str, file_id: int):
 # ---------------------------------------------------------------- 记录 API
 @app.get("/api/records")
 def list_records(request: Request, q: str = "", date_from: str = "", date_to: str = "",
-                 body_part: str = "", hospital: str = "", tag: str = "", kind: str = "",
+                 body_part: str = "", hospital: str = "", biopsy_pathology: str = "",
+                 surgery_pathology: str = "", tag: str = "", kind: str = "",
                  followup: str = "", page: int = 1, page_size: int = 40):
     where, params = [], []
     for kw in q.split():
         like = "%" + kw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         cols = ["r.title", "r.body_part", "r.hospital", "r.patient_name", "r.patient_id",
-                "r.diagnosis", "r.notes", "r.followup_note", "r.extra"]
+                "r.diagnosis", "r.biopsy_pathology", "r.surgery_pathology",
+                "r.notes", "r.followup_note", "r.extra"]
         cond = " OR ".join(f"{c} LIKE ? ESCAPE '\\'" for c in cols)
         cond += " OR EXISTS(SELECT 1 FROM record_tags t WHERE t.record_id=r.id AND t.tag LIKE ? ESCAPE '\\')"
         cond += " OR EXISTS(SELECT 1 FROM files f WHERE f.record_id=r.id AND f.orig_name LIKE ? ESCAPE '\\')"
@@ -790,6 +816,10 @@ def list_records(request: Request, q: str = "", date_from: str = "", date_to: st
         where.append("r.body_part = ?"); params.append(body_part)
     if hospital:
         where.append("r.hospital = ?"); params.append(hospital)
+    if biopsy_pathology:
+        where.append("r.biopsy_pathology LIKE ?"); params.append(f"%{biopsy_pathology}%")
+    if surgery_pathology:
+        where.append("r.surgery_pathology LIKE ?"); params.append(f"%{surgery_pathology}%")
     if tag:
         where.append("EXISTS(SELECT 1 FROM record_tags t WHERE t.record_id=r.id AND t.tag=?)")
         params.append(tag)
@@ -1119,24 +1149,27 @@ def meta():
         fu = followup_summary(conn)
         path_keys = [f["key"] for f in custom if f.get("pathology_assist")]
         path_hist = []
-        if path_keys:
-            seen = set()
-            for row in conn.execute("SELECT body_part, extra FROM records ORDER BY id DESC LIMIT 500"):
-                ex = parse_extra(row["extra"])
-                bp = row["body_part"] or ""
-                for pk in path_keys:
-                    raw = ex.get(pk)
-                    if not isinstance(raw, str) or not raw.strip():
-                        continue
-                    for part in re.split(r"[,，;；\n、]+", raw):
-                        val = part.strip()
-                        if 1 < len(val) <= 60 and (bp, val) not in seen:
-                            seen.add((bp, val))
-                            path_hist.append({"body_part": bp, "val": val})
-                            if len(path_hist) >= 150:
-                                break
+        seen = set()
+        for row in conn.execute(
+            "SELECT body_part, biopsy_pathology, surgery_pathology, extra FROM records ORDER BY id DESC LIMIT 500"
+        ):
+            ex = parse_extra(row["extra"]) if path_keys else {}
+            bp = row["body_part"] or ""
+            raws = [row["biopsy_pathology"] or "", row["surgery_pathology"] or ""] + [ex.get(pk) for pk in path_keys]
+            for raw in raws:
+                if not isinstance(raw, str) or not raw.strip():
+                    continue
+                for part in re.split(r"[,，;；\n、]+", raw):
+                    val = part.strip()
+                    if 1 < len(val) <= 60 and (bp, val) not in seen:
+                        seen.add((bp, val))
+                        path_hist.append({"body_part": bp, "val": val})
+                        if len(path_hist) >= 150:
+                            break
                 if len(path_hist) >= 150:
                     break
+            if len(path_hist) >= 150:
+                break
     return {"body_parts": parts, "hospitals": hospitals, "tags": tags, "stats": stats,
             "fields": {"builtin": builtin, "custom": custom},
             "followup": fu,
