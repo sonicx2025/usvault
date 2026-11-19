@@ -9,6 +9,54 @@ let META = { body_parts: [], tags: [], stats: {} };
 let DEFAULT_PW = false;
 const EMPTY_LIST = { q: '', date_from: '', date_to: '', body_part: '', hospital: '', tag: '', kind: '', followup: '', page: 1, cf: {} };
 let listState = { ...EMPTY_LIST, cf: {} };
+let filtersOpen = false;
+
+// ------------------------------------------------------------ 图标 & 主题
+const ICONS = {
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>',
+  moon: '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>',
+  search: '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
+  sliders: '<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>',
+  calendar: '<rect x="3" y="4" width="18" height="18" rx="3"/><path d="M16 2v4M8 2v4M3 10h18"/>',
+  clock: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+  image: '<rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>',
+  play: '<polygon points="6 4 20 12 6 20 6 4" fill="currentColor" stroke="none"/>',
+  plus: '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
+  edit: '<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>',
+  trash: '<polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>',
+  back: '<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>',
+  check: '<polyline points="20 6 9 17 4 12"/>',
+  link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+  columns: '<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="12" y1="3" x2="12" y2="21"/>',
+  list: '<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="4" cy="6" r="1" fill="currentColor"/><circle cx="4" cy="12" r="1" fill="currentColor"/><circle cx="4" cy="18" r="1" fill="currentColor"/>',
+  upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>',
+  settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
+  bell: '<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>',
+  x: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+  up: '<polyline points="18 15 12 9 6 15"/>',
+  down: '<polyline points="6 9 12 15 18 9"/>',
+};
+const ico = (name, cls = '') => `<svg class="ico ${cls}" viewBox="0 0 24 24">${ICONS[name] || ''}</svg>`;
+
+function syncThemeBtn() {
+  const btn = $('#themeBtn');
+  const cur = document.documentElement.dataset.theme || 'dark';
+  if (btn) {
+    btn.innerHTML = ico(cur === 'dark' ? 'sun' : 'moon');
+    btn.title = cur === 'dark' ? '切换浅色模式' : '切换深色模式';
+  }
+  const m = $('#metaTheme');
+  if (m) m.content = cur === 'light' ? '#f5f5f7' : '#09090b';
+}
+if ($('#themeBtn')) {
+  syncThemeBtn();
+  $('#themeBtn').onclick = () => {
+    const next = (document.documentElement.dataset.theme || 'dark') === 'dark' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem('usv_theme', next);
+    syncThemeBtn();
+  };
+}
 
 // ------------------------------------------------------------ 工具
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
@@ -122,13 +170,16 @@ async function loadMeta() {
 function showLogin() {
   $('#topbar').hidden = true;
   app.innerHTML = `
-    <form class="login" id="loginForm">
-      <img src="/icons/icon-192.png" alt="">
-      <h1>超声影像库</h1>
-      <input type="password" id="pw" placeholder="请输入密码" autocomplete="current-password" autofocus>
-      <button class="btn primary">登录</button>
-      <div class="err" id="loginErr"></div>
-    </form>`;
+    <div class="login-wrap">
+      <form class="login" id="loginForm">
+        <div class="login-logo"><img src="/icons/icon-192.png" alt=""></div>
+        <h1>超声影像库</h1>
+        <p class="login-sub">个人超声影像与随访管理</p>
+        <input type="password" id="pw" placeholder="请输入访问密码" autocomplete="current-password" autofocus>
+        <button class="btn primary">登录</button>
+        <div class="err" id="loginErr"></div>
+      </form>
+    </div>`;
   $('#loginForm').onsubmit = async (e) => {
     e.preventDefault();
     try {
@@ -145,6 +196,9 @@ async function route() {
   const h = location.hash.slice(1) || '/';
   closeLightbox();
   window.scrollTo(0, 0);
+  document.querySelectorAll('.top-actions a[data-nav]').forEach((a) => {
+    a.classList.toggle('active', h === a.dataset.nav);
+  });
   try {
     let m;
     if (h === '/' || h.startsWith('/?')) return await viewList();
@@ -404,6 +458,13 @@ function cfFilter(f, cf) {
 }
 
 // ------------------------------------------------------------ 列表 / 检索
+function activeFilterCount(s) {
+  let n = 0;
+  for (const k of ['date_from', 'date_to', 'body_part', 'hospital', 'kind', 'followup']) if (s[k]) n++;
+  n += Object.keys(s.cf).length;
+  return n;
+}
+
 async function viewList() {
   const s = listState;
   const kindOpts = [['', '全部类型'], ['image', '含图片'], ['video', '含视频']];
@@ -413,49 +474,79 @@ async function viewList() {
   const fuParts = [];
   if (fu.overdue) fuParts.push(`<strong>${fu.overdue}</strong> 条已逾期`);
   if (fu.due_soon) fuParts.push(`<strong>${fu.due_soon}</strong> 条 ${fu.lead_days ? `${fu.lead_days} 天内` : '今天'}到期`);
+  const fCount = activeFilterCount(s);
+  const showDrawer = filtersOpen || fCount > 0;
   app.innerHTML = `
-    ${DEFAULT_PW ? '<div class="warn">⚠️ 当前使用默认密码 admin，请在部署配置中修改 APP_PASSWORD。</div>' : ''}
+    ${DEFAULT_PW ? '<div class="warn">当前使用默认密码 admin，请在部署配置中修改 APP_PASSWORD。</div>' : ''}
     ${fu.alert_count > 0 ? `<div class="fu-banner ${fu.overdue ? 'over' : ''}">
-      <span>📅 随访提醒：${fuParts.join('，')}</span>
+      <span class="fu-banner-l">${ico('bell')}<span>随访提醒：${fuParts.join('，')}</span></span>
       <a class="btn sm" href="#/followups">去随访中心 →</a>
     </div>` : ''}
     <form class="search" id="searchForm">
       <div class="search-main">
-        <input type="search" name="q" placeholder="搜索全部文字信息与文件名…（空格分隔多个关键词）" value="${esc(s.q)}">
-        <button class="btn primary">搜索</button>
+        <div class="search-box">
+          ${ico('search')}
+          <input type="search" name="q" placeholder="搜索病例标题、患者、诊断、病理、医院、标签、文件名…" value="${esc(s.q)}">
+        </div>
+        <button type="button" class="btn filter-btn ${showDrawer || fCount ? 'active' : ''}" id="filterToggle">
+          ${ico('sliders')}
+          <span>筛选</span>
+          <span class="filter-dot" id="filterDot" ${fCount ? '' : 'hidden'}>${fCount || ''}</span>
+        </button>
+        <button class="btn primary" style="height:40px">搜索</button>
       </div>
-      <div class="filters">
-        <div><label>开始日期</label><input type="date" name="date_from" value="${esc(s.date_from)}"></div>
-        <div><label>结束日期</label><input type="date" name="date_to" value="${esc(s.date_to)}"></div>
-        ${bh('body_part') ? '' : `<div><label>${bl('body_part')}</label><select name="body_part"><option value="">全部</option>
-          ${META.body_parts.map((p) => `<option ${p.name === s.body_part ? 'selected' : ''} value="${esc(p.name)}">${esc(p.name)} (${p.n})</option>`).join('')}
-        </select></div>`}
-        ${!bh('hospital') && META.hospitals?.length ? `<div><label>${bl('hospital')}</label><select name="hospital"><option value="">全部</option>
-          ${META.hospitals.map((h) => `<option ${h.name === s.hospital ? 'selected' : ''} value="${esc(h.name)}">${esc(h.name)} (${h.n})</option>`).join('')}
-        </select></div>` : ''}
-        <div><label>类型</label><select name="kind">
-          ${kindOpts.map(([v, t]) => `<option value="${v}" ${v === s.kind ? 'selected' : ''}>${t}</option>`).join('')}
-        </select></div>
-        <div><label>随访</label><select name="followup">
-          ${fuOpts.map(([v, t]) => `<option value="${v}" ${v === s.followup ? 'selected' : ''}>${t}</option>`).join('')}
-        </select></div>
-        ${cfs.map((f) => cfFilter(f, s.cf)).join('')}
+      <div class="filters-drawer" id="filtersDrawer" ${showDrawer ? '' : 'hidden'}>
+        <div class="filters">
+          <div><label>开始日期</label><input type="date" name="date_from" value="${esc(s.date_from)}"></div>
+          <div><label>结束日期</label><input type="date" name="date_to" value="${esc(s.date_to)}"></div>
+          ${bh('body_part') ? '' : `<div><label>${bl('body_part')}</label><select name="body_part"><option value="">全部</option>
+            ${META.body_parts.map((p) => `<option ${p.name === s.body_part ? 'selected' : ''} value="${esc(p.name)}">${esc(p.name)} (${p.n})</option>`).join('')}
+          </select></div>`}
+          ${!bh('hospital') && META.hospitals?.length ? `<div><label>${bl('hospital')}</label><select name="hospital"><option value="">全部</option>
+            ${META.hospitals.map((h) => `<option ${h.name === s.hospital ? 'selected' : ''} value="${esc(h.name)}">${esc(h.name)} (${h.n})</option>`).join('')}
+          </select></div>` : ''}
+          <div><label>类型</label><select name="kind">
+            ${kindOpts.map(([v, t]) => `<option value="${v}" ${v === s.kind ? 'selected' : ''}>${t}</option>`).join('')}
+          </select></div>
+          <div><label>随访</label><select name="followup">
+            ${fuOpts.map(([v, t]) => `<option value="${v}" ${v === s.followup ? 'selected' : ''}>${t}</option>`).join('')}
+          </select></div>
+          ${cfs.map((f) => cfFilter(f, s.cf)).join('')}
+        </div>
+        <div style="margin-top:10px" id="resetWrap" hidden><button type="button" class="btn sm ghost" id="resetBtn">${ico('x', 'sm')} 清除筛选条件</button></div>
       </div>
       ${!bh('tags') && META.tags.length ? `<div class="chips">${META.tags.slice(0, 30).map((t) =>
         `<span class="chip ${t.name === s.tag ? 'on' : ''}" data-tag="${esc(t.name)}">#${esc(t.name)} ${t.n}</span>`).join('')}</div>` : ''}
-      <div style="margin-top:10px" id="resetWrap" hidden><button type="button" class="btn ghost" id="resetBtn">清除筛选条件</button></div>
     </form>
-    <div class="stats"><span id="resultInfo">加载中…</span>
-      <span>共 ${META.stats.records || 0} 条记录 · ${META.stats.images || 0} 张图片 · ${META.stats.videos || 0} 段视频 · ${fmtSize(META.stats.bytes || 0)}</span></div>
+    <div class="hero-bar">
+      <div class="stat-pills">
+        <span class="stat-pill"><strong>${META.stats.records || 0}</strong> 条记录</span>
+        <span class="stat-pill">${ico('image', 'sm')} <strong>${META.stats.images || 0}</strong> 图</span>
+        <span class="stat-pill">${ico('play', 'sm')} <strong>${META.stats.videos || 0}</strong> 视频</span>
+        <span class="stat-pill">${fmtSize(META.stats.bytes || 0)}</span>
+      </div>
+      <span class="muted num" style="font-size:13px" id="resultInfo">加载中…</span>
+    </div>
     <div class="grid" id="grid"></div>
     <div class="more"><button class="btn" id="moreBtn" hidden>加载更多</button></div>`;
 
   const form = $('#searchForm');
+  const drawer = $('#filtersDrawer');
+  const fBtn = $('#filterToggle');
+  fBtn.onclick = () => {
+    filtersOpen = drawer.hidden;
+    drawer.hidden = !filtersOpen;
+    fBtn.classList.toggle('active', filtersOpen || activeFilterCount(s) > 0);
+  };
   const apply = () => {
     const fd = new FormData(form);
     for (const k of ['q', 'date_from', 'date_to', 'body_part', 'hospital', 'kind', 'followup']) s[k] = (fd.get(k) || '').trim();
     s.cf = {};
     for (const [k, v] of fd.entries()) if (/^cf\d+/.test(k) && String(v).trim()) s.cf[k] = String(v).trim();
+    const n = activeFilterCount(s);
+    const dot = $('#filterDot');
+    if (dot) { dot.textContent = n || ''; dot.hidden = !n; }
+    fBtn.classList.toggle('active', !drawer.hidden || n > 0);
     s.page = 1; loadPage(true);
   };
   form.onsubmit = (e) => { e.preventDefault(); apply(); };
@@ -488,7 +579,8 @@ async function loadPage(reset) {
   if (!d.total) grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1">
       ${META.stats.records ? '没有找到匹配的记录' : '还没有记录，点击右上角「新建记录」开始吧'}</div>`;
   $('#resultInfo').textContent = `找到 ${d.total} 条`;
-  $('#resetWrap').hidden = !(s.date_from || s.date_to || s.body_part || s.hospital || s.tag || s.kind || s.followup || Object.keys(s.cf).length);
+  const rw = $('#resetWrap');
+  if (rw) rw.hidden = !(s.date_from || s.date_to || s.body_part || s.hospital || s.tag || s.kind || s.followup || Object.keys(s.cf).length);
   $('#moreBtn').hidden = d.page * d.page_size >= d.total;
 }
 
@@ -502,14 +594,14 @@ function cardHtml(r) {
   }).filter(Boolean).join(' · ');
   const fu = r.followup_status === 'pending' ? fuInfo(r) : null;
   return `<a class="card" href="#/r/${r.id}">
-    <div class="cover ${r.cover ? '' : 'empty'}" ${r.cover ? `style="background-image:url('${r.cover}')"` : ''}>
-      ${r.cover ? '' : '无预览'}
-      ${r.series_count > 1 ? `<span class="card-tl">🕒 ${r.series_count}次</span>` : ''}
-      <div class="badges">${r.n_image ? `<span class="badge">🖼 ${r.n_image}</span>` : ''}${r.n_video ? `<span class="badge">▶ ${r.n_video}</span>` : ''}</div>
+    <div class="cover ${r.cover ? '' : 'empty'}">
+      ${r.cover ? `<div class="cover-img" style="background-image:url('${r.cover}')"></div>` : `${ico('image', 'lg')}<span>无预览</span>`}
+      ${r.series_count > 1 ? `<span class="card-tl">${ico('clock', 'sm')} ${r.series_count}次</span>` : ''}
+      <div class="badges">${r.n_image ? `<span class="badge">${ico('image', 'sm')} ${r.n_image}</span>` : ''}${r.n_video ? `<span class="badge">${ico('play', 'sm')} ${r.n_video}</span>` : ''}</div>
     </div>
     <div class="body"><div class="t">${esc(title)}</div><div class="sub">${esc(sub)}</div>
-      ${extra ? `<div class="sub">${extra}</div>` : ''}
-      ${fu ? `<div style="margin-top:6px"><span class="fu-pill ${fu.cls}">📅 ${esc(fu.text)}</span></div>` : ''}
+      ${extra ? `<div class="sub-extra">${extra}</div>` : ''}
+      ${fu ? `<div style="margin-top:4px"><span class="fu-pill ${fu.cls}">${ico('calendar', 'sm')} ${esc(fu.text)}</span></div>` : ''}
       ${!bh('tags') && r.tags.length ? `<div class="tagrow">${r.tags.slice(0, 4).map((t) => `<span class="tag">#${esc(t)}</span>`).join('')}</div>` : ''}
     </div></a>`;
 }
@@ -568,7 +660,7 @@ async function viewForm(rec, fromId = null) {
           <label>${esc(f.label)}</label>${cfInput(f, r.extra[f.key])}</div>`).join('')}
       </div>` : `<div class="muted" style="margin:-4px 2px 14px;font-size:13px">需要更多字段？到 <a href="#/settings">⚙ 设置</a> 添加自定义字段。</div>`}
       <div class="panel" id="fuPanel">
-        <h3 style="margin:0 0 10px;font-size:15px">📅 随访计划（可选）</h3>
+        <h3 class="sec-title">${ico('calendar')} 随访计划（可选）</h3>
         <div class="form-grid">
           <div><label>下次随访日期</label><input type="date" name="followup_date" value="${v('followup_date')}">${quickDatesHtml(true)}</div>
           <div><label>随访重点 / 备注</label><input name="followup_note" value="${v('followup_note')}" placeholder="如：复查右叶结节大小、边界及血流"></div>
@@ -630,8 +722,9 @@ async function viewForm(rec, fromId = null) {
 
 function dropzoneHtml() {
   return `<div class="drop" id="drop">
+      <div class="drop-icon">${ico('upload')}</div>
       <div><strong>拖拽图片 / 视频到这里</strong>，或点击选择文件</div>
-      <div style="font-size:12.5px;margin-top:4px">支持 JPG、PNG、MP4、MOV，可多选</div>
+      <div style="font-size:12px">支持 JPG、PNG、MP4、MOV，可多选</div>
       <input type="file" id="fileInput" multiple accept="image/*,video/*,.jpg,.jpeg,.png,.mp4,.mov" hidden>
     </div>
     <div class="previews" id="previews"></div>
@@ -682,10 +775,10 @@ async function viewDetail(id) {
     <div class="page-head">
       <h2>${esc((!bh('title') && r.title) || (!bh('body_part') && r.body_part) || '未命名记录')}</h2>
       <div class="actions">
-        <a class="btn ghost" href="#/">← 返回</a>
-        <a class="btn primary" href="#/new?from=${r.id}">＋ 录入复查</a>
-        <a class="btn" href="#/r/${r.id}/edit">编辑</a>
-        <button class="btn danger" id="delRec">删除</button>
+        <a class="btn ghost" href="#/">${ico('back')} 返回</a>
+        <a class="btn primary" href="#/new?from=${r.id}">${ico('plus')} 录入复查</a>
+        <a class="btn" href="#/r/${r.id}/edit">${ico('edit')} 编辑</a>
+        <button class="btn danger" id="delRec">${ico('trash')} 删除</button>
       </div>
     </div>
     <div class="panel meta-grid">
@@ -696,26 +789,26 @@ async function viewDetail(id) {
       ${brow('notes', r.notes, true)}
     </div>
 
-    <div class="panel" id="fuBox">
+    <div class="panel ${fu ? `fu-panel-${fu.bucket}` : ''}" id="fuBox">
       <div class="page-head" style="margin-bottom:8px">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-          <h2 style="font-size:16px">📅 随访计划</h2>
+          <h2 style="font-size:15.5px">${ico('calendar')} 随访计划</h2>
           ${fu ? `<span class="fu-pill ${fu.cls}">${esc(fu.text)}</span>` : '<span class="muted" style="font-size:13px">未设置</span>'}
         </div>
         <div class="actions">
           ${r.followup_status === 'pending' ? `
-            <button class="btn sm" id="fuDoneBtn">✓ 标记完成</button>
+            <button class="btn sm" id="fuDoneBtn">${ico('check', 'sm')} 标记完成</button>
             <button class="btn sm" id="fuEditBtn">改期 / 编辑</button>
             <button class="btn sm ghost" id="fuCancelBtn">取消随访</button>
           ` : `
-            <button class="btn sm" id="fuEditBtn">${r.followup_date ? '修改随访' : '＋ 设置随访'}</button>
+            <button class="btn sm" id="fuEditBtn">${r.followup_date ? '修改随访' : `${ico('plus', 'sm')} 设置随访`}</button>
             ${r.followup_date && r.followup_status !== 'pending' ? '<button class="btn sm ghost" id="fuReopenBtn">重新开启</button>' : ''}
           `}
-          ${!hasSeries ? '<button class="btn sm ghost" id="openLinkBtn">🔗 关联已有记录</button>' : ''}
+          ${!hasSeries ? `<button class="btn sm ghost" id="openLinkBtn">${ico('link', 'sm')} 关联已有记录</button>` : ''}
         </div>
       </div>
-      ${r.followup_date ? `<div class="muted" style="font-size:13.5px">
-        计划日期：<strong>${esc(r.followup_date)}</strong>
+      ${r.followup_date ? `<div class="muted num" style="font-size:13px">
+        计划日期：<strong style="color:var(--text)">${esc(r.followup_date)}</strong>
         ${r.followup_note ? ` · 备注：${esc(r.followup_note)}` : ''}
         ${r.followup_done_at ? ` · ${r.followup_status === 'cancelled' ? '取消于' : '完成于'} ${esc(r.followup_done_at.replace('T', ' '))}` : ''}
         ${r.followup_next ? ` · <a href="#/r/${r.followup_next.id}">查看复查记录 (${esc(r.followup_next.exam_date)}) →</a>` : ''}
@@ -727,12 +820,12 @@ async function viewDetail(id) {
     ${hasSeries ? renderTimelinePanel(r, series) : ''}
 
     <div class="panel">
-      <div class="page-head" style="margin-bottom:10px"><h2 style="font-size:16px">影像 (${r.files.length})</h2></div>
+      <div class="page-head" style="margin-bottom:12px"><h2 style="font-size:15.5px">${ico('image')} 影像 (${r.files.length})</h2></div>
       <div class="gallery" id="gallery">
         ${r.files.map((f, i) => `
           <div class="gitem ${f.thumb ? '' : 'novthumb'}" data-i="${i}" ${f.thumb ? `style="background-image:url('${f.thumb}')"` : ''}>
             ${f.thumb ? '' : esc(f.orig_name)}
-            ${f.kind === 'video' ? `<div class="play">▶</div>` : ''}
+            ${f.kind === 'video' ? `<div class="play"><span class="play-circle">${ico('play')}</span></div>` : ''}
             <button class="del" data-id="${f.id}">删除</button>
           </div>`).join('')}
       </div>
@@ -790,7 +883,7 @@ async function viewDetail(id) {
       const cmp = $('#cmpBox'), tl = $('#tlList');
       const showCmp = cmp.hidden;
       cmp.hidden = !showCmp; tl.hidden = showCmp;
-      $('#cmpToggleBtn').textContent = showCmp ? '☰ 时间线视图' : '⇄ 并排对比';
+      $('#cmpToggleBtn').innerHTML = showCmp ? `${ico('list', 'sm')} 时间线视图` : `${ico('columns', 'sm')} 并排对比`;
     };
     $('#unlinkBtn').onclick = async () => {
       if (!confirm('把当前记录移出此随访时间线？（不会删除记录本身）')) return;
@@ -832,14 +925,14 @@ function renderTimelinePanel(cur, series) {
   const hasNotes = series.some((s) => s.notes);
   const thumbStrip = (s) => s.files.length ? `<div class="tl-thumbs">${s.files.slice(0, 6).map((f, i) => `
     <div class="tl-th" data-rid="${s.id}" data-fi="${i}" ${f.thumb ? `style="background-image:url('${f.thumb}')"` : ''}>
-      ${f.thumb ? '' : '文件'}${f.kind === 'video' ? '<span class="p">▶</span>' : ''}
+      ${f.thumb ? '' : '文件'}${f.kind === 'video' ? `<span class="p">${ico('play')}</span>` : ''}
     </div>`).join('')}${s.files.length > 6 ? `<span class="muted" style="font-size:12px;align-self:center">+${s.files.length - 6}</span>` : ''}</div>` : '';
   return `<div class="panel" id="tlPanel">
-    <div class="page-head" style="margin-bottom:10px">
-      <h2 style="font-size:16px">🕒 随访时间线 (${series.length} 次检查)</h2>
+    <div class="page-head" style="margin-bottom:12px">
+      <h2 style="font-size:15.5px">${ico('clock')} 随访时间线 (${series.length} 次检查)</h2>
       <div class="actions">
-        <button class="btn sm" id="cmpToggleBtn">⇄ 并排对比</button>
-        <button class="btn sm ghost" id="openLinkBtn">＋ 关联记录</button>
+        <button class="btn sm" id="cmpToggleBtn">${ico('columns', 'sm')} 并排对比</button>
+        <button class="btn sm ghost" id="openLinkBtn">${ico('link', 'sm')} 关联记录</button>
         <button class="btn sm ghost" id="unlinkBtn">移出时间线</button>
       </div>
     </div>
@@ -941,7 +1034,7 @@ async function viewFollowups() {
         <div class="fu-top">
           <a class="fu-title" href="#/r/${r.id}">${esc(title)}</a>
           ${info ? `<span class="fu-pill ${info.cls}">${esc(info.text)}</span>` : ''}
-          ${r.series_count > 1 ? `<span class="pill">🕒 ${r.series_count}次</span>` : ''}
+          ${r.series_count > 1 ? `<span class="pill">${ico('clock', 'sm')} ${r.series_count}次</span>` : ''}
         </div>
         <div class="muted" style="font-size:12.5px;margin-top:2px">${esc(sub)}</div>
         <div style="font-size:13px;margin-top:4px">
@@ -974,9 +1067,9 @@ async function viewFollowups() {
     if (!d.items.length) {
       bodyHtml = '<div class="empty-state">暂无待随访计划<br><span style="font-size:13px">在任意记录详情页或新建记录时设置「下次随访日期」即可加入提醒</span></div>';
     } else {
-      if (over.length) bodyHtml += `<div class="fu-sec"><h3>🔴 已逾期 (${over.length})</h3>${over.map(renderRow).join('')}</div>`;
-      if (due.length) bodyHtml += `<div class="fu-sec"><h3>🟠 近期到期 · ${lead ? `今天～${lead}天内` : '今天'} (${due.length})</h3>${due.map(renderRow).join('')}</div>`;
-      if (plan.length) bodyHtml += `<div class="fu-sec"><h3>🔵 以后计划 (${plan.length})</h3>${plan.map(renderRow).join('')}</div>`;
+      if (over.length) bodyHtml += `<div class="fu-sec"><h3><span class="dot over"></span>已逾期 (${over.length})</h3>${over.map(renderRow).join('')}</div>`;
+      if (due.length) bodyHtml += `<div class="fu-sec"><h3><span class="dot due"></span>近期到期 · ${lead ? `今天～${lead}天内` : '今天'} (${due.length})</h3>${due.map(renderRow).join('')}</div>`;
+      if (plan.length) bodyHtml += `<div class="fu-sec"><h3><span class="dot plan"></span>以后计划 (${plan.length})</h3>${plan.map(renderRow).join('')}</div>`;
     }
   } else {
     bodyHtml = d.items.length ? d.items.map(renderRow).join('') : `<div class="empty-state">暂无${fuTab === 'done' ? '已完成' : '已取消'}的随访记录</div>`;
@@ -984,10 +1077,10 @@ async function viewFollowups() {
 
   app.innerHTML = `
     <div class="page-head">
-      <h2>📅 随访中心</h2>
+      <h2>${ico('calendar')} 随访中心</h2>
       <div class="actions">
-        <a class="btn ghost" href="#/settings">⚙ 提醒设置（提前 ${lead} 天）</a>
-        <a class="btn ghost" href="#/">← 返回</a>
+        <a class="btn ghost" href="#/settings">${ico('settings')} 提醒设置（提前 ${lead} 天）</a>
+        <a class="btn ghost" href="#/">${ico('back')} 返回</a>
       </div>
     </div>
     <div class="tabs" id="fuTabs">
@@ -1040,10 +1133,10 @@ async function viewFollowups() {
 async function viewSettings() {
   const [d, fuCfg] = await Promise.all([api('/api/fields'), api('/api/settings/followup')]);
   app.innerHTML = `
-    <div class="page-head"><h2>⚙ 设置</h2><a class="btn ghost" href="#/">← 返回</a></div>
+    <div class="page-head"><h2>${ico('settings')} 设置</h2><a class="btn ghost" href="#/">${ico('back')} 返回</a></div>
 
     <form class="panel" id="fuCfgForm">
-      <h2 style="font-size:16px;margin:0 0 4px">📅 随访提醒设置</h2>
+      <h2 class="sec-title">${ico('bell')} 随访提醒设置</h2>
       <div class="muted" style="font-size:13px;margin-bottom:10px">到期前 N 天起（含当天及已逾期），会在顶部「随访」按钮显示红点角标，并在首页顶部提示。</div>
       <div class="form-grid" style="align-items:end">
         <div>
