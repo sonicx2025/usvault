@@ -20,6 +20,32 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Prepare image names and version
+        id: prep
+        env:
+          ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+          ACR_NAMESPACE: ${{ secrets.ACR_NAMESPACE }}
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+          REPO: ${{ github.repository }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          SHA: ${{ github.sha }}
+        run: |
+          USE_ACR=0
+          if [ -n "$ACR_REGISTRY" ] && [ -n "$ACR_NAMESPACE" ] && [ -n "$ACR_USERNAME" ] && [ -n "$ACR_PASSWORD" ]; then
+            USE_ACR=1
+          fi
+          {
+            echo "acr=${USE_ACR}"
+            echo "version=$(date -u +%Y.%m.%d)-${SHA:0:7}"
+            echo "images<<EOF"
+            echo "ghcr.io/${REPO}"
+            if [ "$USE_ACR" = "1" ]; then
+              echo "${ACR_REGISTRY}/${ACR_NAMESPACE}/${REPO_NAME}"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Log in to GitHub Container Registry (GHCR)
         uses: docker/login-action@v3
         with:
@@ -28,31 +54,12 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to Alibaba Cloud ACR (optional)
-        if: ${{ secrets.ACR_REGISTRY != '' && secrets.ACR_USERNAME != '' && secrets.ACR_PASSWORD != '' }}
+        if: steps.prep.outputs.acr == '1'
         uses: docker/login-action@v3
         with:
           registry: ${{ secrets.ACR_REGISTRY }}
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
-
-      - name: Prepare image names and version
-        id: prep
-        env:
-          ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
-          ACR_NAMESPACE: ${{ secrets.ACR_NAMESPACE }}
-          REPO: ${{ github.repository }}
-          REPO_NAME: ${{ github.event.repository.name }}
-          SHA: ${{ github.sha }}
-        run: |
-          {
-            echo "images<<EOF"
-            echo "ghcr.io/${REPO}"
-            if [ -n "${ACR_REGISTRY}" ] && [ -n "${ACR_NAMESPACE}" ]; then
-              echo "${ACR_REGISTRY}/${ACR_NAMESPACE}/${REPO_NAME}"
-            fi
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-          echo "version=$(date -u +%Y.%m.%d)-${SHA:0:7}" >> "$GITHUB_OUTPUT"
 
       - name: Extract Docker metadata
         id: meta
