@@ -7,7 +7,7 @@ const DEFAULT_PARTS = ['甲状腺', '乳腺', '肝脏', '胆囊', '胰腺', '脾
   '子宫附件', '产科', '心脏', '颈部血管', '下肢血管', '浅表淋巴结', '腮腺', '颌下腺', '肌骨', '阴囊', '其他'];
 let META = { body_parts: [], tags: [], stats: {} };
 let DEFAULT_PW = false;
-const EMPTY_LIST = { q: '', date_from: '', date_to: '', body_part: '', tag: '', kind: '', followup: '', page: 1, cf: {} };
+const EMPTY_LIST = { q: '', date_from: '', date_to: '', body_part: '', hospital: '', tag: '', kind: '', followup: '', page: 1, cf: {} };
 let listState = { ...EMPTY_LIST, cf: {} };
 
 // ------------------------------------------------------------ 工具
@@ -315,6 +315,60 @@ function bindPathologyACs(container, getBodyPart, opts = {}) {
   });
   return { refreshHints: () => controllers.forEach((c) => c.refresh()) };
 }
+
+// 通用历史记录输入联想（用于医院等输入过的词下次自动提示）
+function bindHistoryAC(wrap, getList) {
+  if (!wrap) return;
+  const el = wrap.querySelector('input');
+  const menu = document.createElement('div');
+  menu.className = 'ac-menu';
+  menu.hidden = true;
+  wrap.appendChild(menu);
+  let items = [], idx = -1, picking = false;
+  const close = () => { menu.hidden = true; idx = -1; };
+  const pick = (i) => {
+    const it = items[i]; if (!it) return;
+    picking = true;
+    el.value = it.name;
+    close();
+    el.focus();
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    picking = false;
+  };
+  const highlight = () => {
+    menu.querySelectorAll('.ac-item').forEach((n, i) => {
+      const on = i === idx; n.classList.toggle('on', on);
+      if (on) n.scrollIntoView({ block: 'nearest' });
+    });
+  };
+  const render = () => {
+    const q = el.value.trim().toLowerCase();
+    const all = getList() || [];
+    items = (q ? all.filter((x) => x.name.toLowerCase().includes(q)) : all).slice(0, 15);
+    if (!items.length) return close();
+    idx = q ? 0 : -1;
+    menu.innerHTML = `<div class="ac-head">曾输入过的医院（点击或回车填入）</div>` + items.map((it, i) => `
+      <div class="ac-item ${i === idx ? 'on' : ''}" data-i="${i}">
+        <span>${esc(it.name)}</span>
+        <span class="ac-tags"><span class="ac-cat">${it.n}次</span></span>
+      </div>`).join('');
+    menu.hidden = false;
+  };
+  menu.addEventListener('mousedown', (e) => {
+    const row = e.target.closest('.ac-item'); if (!row) return;
+    e.preventDefault(); pick(+row.dataset.i);
+  });
+  el.addEventListener('focus', () => { if (!picking) render(); });
+  el.addEventListener('input', () => { if (!picking) render(); });
+  el.addEventListener('blur', () => setTimeout(close, 150));
+  el.addEventListener('keydown', (e) => {
+    if (menu.hidden) return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); idx = (idx + 1) % items.length; highlight(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); idx = (idx - 1 + items.length) % items.length; highlight(); }
+    else if (e.key === 'Enter' && idx >= 0) { e.preventDefault(); pick(idx); }
+    else if (e.key === 'Escape') { e.preventDefault(); close(); }
+  });
+}
 function collectExtra(fd) {
   const extra = {};
   for (const f of CF()) {
@@ -376,6 +430,9 @@ async function viewList() {
         ${bh('body_part') ? '' : `<div><label>${bl('body_part')}</label><select name="body_part"><option value="">全部</option>
           ${META.body_parts.map((p) => `<option ${p.name === s.body_part ? 'selected' : ''} value="${esc(p.name)}">${esc(p.name)} (${p.n})</option>`).join('')}
         </select></div>`}
+        ${!bh('hospital') && META.hospitals?.length ? `<div><label>${bl('hospital')}</label><select name="hospital"><option value="">全部</option>
+          ${META.hospitals.map((h) => `<option ${h.name === s.hospital ? 'selected' : ''} value="${esc(h.name)}">${esc(h.name)} (${h.n})</option>`).join('')}
+        </select></div>` : ''}
         <div><label>类型</label><select name="kind">
           ${kindOpts.map(([v, t]) => `<option value="${v}" ${v === s.kind ? 'selected' : ''}>${t}</option>`).join('')}
         </select></div>
@@ -396,7 +453,7 @@ async function viewList() {
   const form = $('#searchForm');
   const apply = () => {
     const fd = new FormData(form);
-    for (const k of ['q', 'date_from', 'date_to', 'body_part', 'kind', 'followup']) s[k] = (fd.get(k) || '').trim();
+    for (const k of ['q', 'date_from', 'date_to', 'body_part', 'hospital', 'kind', 'followup']) s[k] = (fd.get(k) || '').trim();
     s.cf = {};
     for (const [k, v] of fd.entries()) if (/^cf\d+/.test(k) && String(v).trim()) s.cf[k] = String(v).trim();
     s.page = 1; loadPage(true);
@@ -431,14 +488,14 @@ async function loadPage(reset) {
   if (!d.total) grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1">
       ${META.stats.records ? '没有找到匹配的记录' : '还没有记录，点击右上角「新建记录」开始吧'}</div>`;
   $('#resultInfo').textContent = `找到 ${d.total} 条`;
-  $('#resetWrap').hidden = !(s.date_from || s.date_to || s.body_part || s.tag || s.kind || s.followup || Object.keys(s.cf).length);
+  $('#resetWrap').hidden = !(s.date_from || s.date_to || s.body_part || s.hospital || s.tag || s.kind || s.followup || Object.keys(s.cf).length);
   $('#moreBtn').hidden = d.page * d.page_size >= d.total;
 }
 
 function cardHtml(r) {
   const vis = (k) => (bh(k) ? '' : r[k]);
   const title = vis('title') || vis('diagnosis') || vis('body_part') || '未命名记录';
-  const sub = [r.exam_date, vis('body_part'), vis('patient_name')].filter(Boolean).join(' · ');
+  const sub = [r.exam_date, vis('body_part'), vis('patient_name'), vis('hospital')].filter(Boolean).join(' · ');
   const extra = CF().filter((f) => f.show_in_card).map((f) => {
     const v = fmtVal(f, r.extra[f.key]);
     return v ? `${esc(f.label)}：${esc(v)}` : '';
@@ -465,6 +522,7 @@ async function viewForm(rec, fromId = null) {
   const r = rec || (src ? {
     exam_date: today(),
     body_part: src.body_part,
+    hospital: src.hospital,
     title: src.title,
     patient_name: src.patient_name,
     patient_id: src.patient_id,
@@ -475,6 +533,7 @@ async function viewForm(rec, fromId = null) {
   } : { exam_date: today(), tags: [], extra: {} });
   const v = (k) => esc(r[k] || '');
   const fld = (k, html, cls = '') => (bh(k) ? '' : `<div class="${cls}"><label>${bl(k)}</label>${html}</div>`);
+  const partOpts = [...new Set([...DEFAULT_PARTS, ...(META.body_parts || []).map((p) => p.name), ...(r.body_part ? [r.body_part] : [])])];
   const cfs = CF();
   const srcExtra = src ? CF().map((f) => {
     const val = fmtVal(f, src.extra[f.key]);
@@ -491,14 +550,17 @@ async function viewForm(rec, fromId = null) {
     <form id="recForm">
       <div class="panel form-grid">
         <div><label>检查日期 *</label><input type="date" name="exam_date" value="${v('exam_date')}" required></div>
-        ${fld('body_part', `<input name="body_part" list="dlParts" value="${v('body_part')}" placeholder="如：甲状腺">`)}
+        ${fld('body_part', `<select name="body_part_sel"><option value="">— 请选择 —</option>${partOpts.map((p) =>
+          `<option ${p === r.body_part ? 'selected' : ''} value="${esc(p)}">${esc(p)}</option>`).join('')}<option value="__custom__">＋ 自定义部位…</option></select>
+          <input name="body_part_custom" placeholder="输入自定义部位" hidden style="margin-top:6px">`)}
+        ${fld('hospital', `<div class="ac-wrap" id="hospWrap"><input name="hospital" value="${v('hospital')}" autocomplete="off" placeholder="输入或选择医院"></div>`)}
         ${fld('title', `<input name="title" value="${v('title')}" placeholder="简要描述，如：甲状腺右叶低回声结节">`, 'full')}
         ${fld('patient_name', `<input name="patient_name" value="${v('patient_name')}">`)}
         ${fld('patient_id', `<input name="patient_id" value="${v('patient_id')}">`)}
         ${fld('sex', `<select name="sex">${['', '男', '女'].map((x) => `<option ${x === r.sex ? 'selected' : ''} value="${x}">${x || '—'}</option>`).join('')}</select>`)}
         ${fld('age', `<input name="age" value="${v('age')}" placeholder="如：45">`)}
         ${fld('diagnosis', `<textarea name="diagnosis" placeholder="如：TI-RADS 4a 类">${v('diagnosis')}</textarea>`, 'full')}
-        ${fld('tags', `<input name="tags" list="dlTags" value="${esc((r.tags || []).join(', '))}" placeholder="逗号或空格分隔，如：结节, 典型病例, 教学">`, 'full')}
+        ${fld('tags', `<input name="tags" list="dlTags" value="${esc((r.tags || []).join(', '))}" placeholder="逗号或空格分隔，如：典型病例, 教学, 造影">`, 'full')}
         ${fld('notes', `<textarea name="notes">${v('notes')}</textarea>`, 'full')}
       </div>
       ${cfs.length ? `<div class="panel form-grid">
@@ -520,18 +582,29 @@ async function viewForm(rec, fromId = null) {
     </form>`;
 
   const form = $('#recForm');
+  const getBodyPart = () => {
+    if (!form.body_part_sel) return '';
+    return form.body_part_sel.value === '__custom__' ? (form.body_part_custom?.value || '') : form.body_part_sel.value;
+  };
   bindQuickDates($('#fuPanel'), form.followup_date, () => form.exam_date.value || today());
-  const acForm = bindPathologyACs(form, () => form.body_part?.value || '');
-  if (form.body_part) {
-    form.body_part.addEventListener('input', () => acForm.refreshHints());
-    form.body_part.addEventListener('change', () => acForm.refreshHints());
+  bindHistoryAC($('#hospWrap'), () => META.hospitals || []);
+  const acForm = bindPathologyACs(form, getBodyPart);
+  if (form.body_part_sel) {
+    form.body_part_sel.onchange = () => {
+      const isCust = form.body_part_sel.value === '__custom__';
+      form.body_part_custom.hidden = !isCust;
+      if (isCust) form.body_part_custom.focus();
+      acForm.refreshHints();
+    };
+    form.body_part_custom.oninput = () => acForm.refreshHints();
   }
   const picked = isEdit ? null : bindDropzone();
   form.onsubmit = async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
     const meta = {};
-    for (const [k, val] of fd.entries()) if (!k.startsWith('cf_')) meta[k] = val;
+    for (const [k, val] of fd.entries()) if (!k.startsWith('cf_') && k !== 'body_part_sel' && k !== 'body_part_custom') meta[k] = val;
+    if (form.body_part_sel) meta.body_part = getBodyPart().trim();
     meta.extra = collectExtra(fd);
     if (src) meta.from_record_id = src.id;
     const btn = $('#saveBtn'); btn.disabled = true;
@@ -616,7 +689,7 @@ async function viewDetail(id) {
       </div>
     </div>
     <div class="panel meta-grid">
-      ${row('检查日期', r.exam_date)}${brow('body_part', r.body_part)}${row('患者', patient)}${brow('patient_id', r.patient_id)}
+      ${row('检查日期', r.exam_date)}${brow('body_part', r.body_part)}${brow('hospital', r.hospital)}${row('患者', patient)}${brow('patient_id', r.patient_id)}
       ${brow('diagnosis', r.diagnosis, true)}
       ${CF().map((f) => row(f.label, fmtVal(f, r.extra[f.key]), ['textarea', 'multiselect'].includes(f.type))).join('')}
       ${!bh('tags') && r.tags.length ? `<div class="full"><div class="k">${bl('tags')}</div><div class="tagrow">${r.tags.map((t) => `<span class="tag">#${esc(t)}</span>`).join('')}</div></div>` : ''}
@@ -856,7 +929,7 @@ async function viewFollowups() {
   const renderRow = (r) => {
     const info = fuInfo(r);
     const title = (!bh('title') && r.title) || (!bh('body_part') && r.body_part) || '未命名记录';
-    const sub = [r.exam_date && `检查日期 ${r.exam_date}`, !bh('body_part') && r.body_part, !bh('patient_name') && r.patient_name].filter(Boolean).join(' · ');
+    const sub = [r.exam_date && `检查日期 ${r.exam_date}`, !bh('body_part') && r.body_part, !bh('hospital') && r.hospital, !bh('patient_name') && r.patient_name].filter(Boolean).join(' · ');
     const extra = CF().filter((f) => f.show_in_card).map((f) => {
       const val = fmtVal(f, r.extra[f.key]);
       return val ? `${f.label}：${val}` : '';

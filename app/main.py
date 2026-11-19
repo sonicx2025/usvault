@@ -110,7 +110,7 @@ CREATE INDEX IF NOT EXISTS idx_files_record ON files(record_id);
 CREATE INDEX IF NOT EXISTS idx_tags_tag ON record_tags(tag);
 """
 
-RECORD_FIELDS = ["exam_date", "title", "body_part", "patient_name", "patient_id",
+RECORD_FIELDS = ["exam_date", "title", "body_part", "hospital", "patient_name", "patient_id",
                  "sex", "age", "diagnosis", "notes"]
 
 
@@ -139,6 +139,7 @@ with db() as _c:
     _rcols = {r[1] for r in _c.execute("PRAGMA table_info(records)")}
     for _col, _ddl in (
         ("extra", "TEXT DEFAULT '{}'"),
+        ("hospital", "TEXT DEFAULT ''"),
         ("series_id", "TEXT DEFAULT ''"),
         ("followup_date", "TEXT DEFAULT ''"),
         ("followup_note", "TEXT DEFAULT ''"),
@@ -150,6 +151,7 @@ with db() as _c:
             _c.execute(f"ALTER TABLE records ADD COLUMN {_col} {_ddl}")
     if "assist" not in {r[1] for r in _c.execute("PRAGMA table_info(field_defs)")}:
         _c.execute("ALTER TABLE field_defs ADD COLUMN assist TEXT DEFAULT 'auto'")
+    _c.execute("CREATE INDEX IF NOT EXISTS idx_records_hospital ON records(hospital)")
     _c.execute("CREATE INDEX IF NOT EXISTS idx_records_series ON records(series_id)")
     _c.execute("CREATE INDEX IF NOT EXISTS idx_records_followup ON records(followup_status, followup_date)")
 
@@ -298,9 +300,9 @@ def make_thumb(file_id: int, path: Path, kind: str) -> bool:
 # ---------------------------------------------------------------- 自定义字段
 FIELD_TYPES = {"text", "textarea", "number", "date", "select", "multiselect", "checkbox"}
 # 内置字段：可以改显示名称、可以隐藏（检查日期固定不可隐藏）
-BUILTIN_FIELDS = [("title", "标题"), ("body_part", "检查部位"), ("patient_name", "患者姓名"),
-                  ("patient_id", "患者ID / 检查号"), ("sex", "性别"), ("age", "年龄"),
-                  ("diagnosis", "超声诊断 / 提示"), ("tags", "标签"), ("notes", "备注")]
+BUILTIN_FIELDS = [("title", "标题"), ("body_part", "检查部位"), ("hospital", "医院"),
+                  ("patient_name", "患者姓名"), ("patient_id", "患者ID"), ("sex", "性别"),
+                  ("age", "年龄"), ("diagnosis", "超声诊断 / 提示"), ("tags", "标签"), ("notes", "备注")]
 
 
 def field_row(r) -> dict:
@@ -325,8 +327,14 @@ def load_fields(conn, active_only=False) -> List[dict]:
 def builtin_settings(conn) -> List[dict]:
     row = conn.execute("SELECT value FROM settings WHERE key='builtin_fields'").fetchone()
     saved = json.loads(row[0]) if row else {}
-    return [{"key": k, "default_label": lbl, "label": (saved.get(k) or {}).get("label") or lbl,
-             "hidden": bool((saved.get(k) or {}).get("hidden"))} for k, lbl in BUILTIN_FIELDS]
+    out = []
+    for k, lbl in BUILTIN_FIELDS:
+        cur = (saved.get(k) or {}).get("label") or lbl
+        if k == "patient_id" and cur == "患者ID / 检查号":
+            cur = lbl
+        out.append({"key": k, "default_label": lbl, "label": cur,
+                    "hidden": bool((saved.get(k) or {}).get("hidden"))})
+    return out
 
 
 def clean_value(f: dict, v):
@@ -708,6 +716,7 @@ def series_records(conn, series_id: str) -> List[dict]:
             "exam_date": r["exam_date"],
             "title": r["title"],
             "body_part": r["body_part"],
+            "hospital": r["hospital"] or "",
             "patient_name": r["patient_name"],
             "diagnosis": r["diagnosis"],
             "notes": r["notes"],
@@ -761,12 +770,12 @@ def trash_file(rel_path: str, file_id: int):
 # ---------------------------------------------------------------- 记录 API
 @app.get("/api/records")
 def list_records(request: Request, q: str = "", date_from: str = "", date_to: str = "",
-                 body_part: str = "", tag: str = "", kind: str = "", followup: str = "",
-                 page: int = 1, page_size: int = 40):
+                 body_part: str = "", hospital: str = "", tag: str = "", kind: str = "",
+                 followup: str = "", page: int = 1, page_size: int = 40):
     where, params = [], []
     for kw in q.split():
         like = "%" + kw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-        cols = ["r.title", "r.body_part", "r.patient_name", "r.patient_id",
+        cols = ["r.title", "r.body_part", "r.hospital", "r.patient_name", "r.patient_id",
                 "r.diagnosis", "r.notes", "r.followup_note", "r.extra"]
         cond = " OR ".join(f"{c} LIKE ? ESCAPE '\\'" for c in cols)
         cond += " OR EXISTS(SELECT 1 FROM record_tags t WHERE t.record_id=r.id AND t.tag LIKE ? ESCAPE '\\')"
@@ -779,6 +788,8 @@ def list_records(request: Request, q: str = "", date_from: str = "", date_to: st
         where.append("r.exam_date <= ?"); params.append(date_to)
     if body_part:
         where.append("r.body_part = ?"); params.append(body_part)
+    if hospital:
+        where.append("r.hospital = ?"); params.append(hospital)
     if tag:
         where.append("EXISTS(SELECT 1 FROM record_tags t WHERE t.record_id=r.id AND t.tag=?)")
         params.append(tag)
@@ -1093,6 +1104,9 @@ def meta():
         parts = [dict(r) for r in conn.execute(
             "SELECT body_part AS name, COUNT(*) AS n FROM records WHERE body_part<>''"
             " GROUP BY body_part ORDER BY n DESC")]
+        hospitals = [dict(r) for r in conn.execute(
+            "SELECT hospital AS name, COUNT(*) AS n FROM records WHERE hospital<>''"
+            " GROUP BY hospital ORDER BY n DESC")]
         tags = [dict(r) for r in conn.execute(
             "SELECT tag AS name, COUNT(*) AS n FROM record_tags GROUP BY tag ORDER BY n DESC")]
         stats = dict(conn.execute(
@@ -1123,7 +1137,7 @@ def meta():
                                 break
                 if len(path_hist) >= 150:
                     break
-    return {"body_parts": parts, "tags": tags, "stats": stats,
+    return {"body_parts": parts, "hospitals": hospitals, "tags": tags, "stats": stats,
             "fields": {"builtin": builtin, "custom": custom},
             "followup": fu,
             "pathology_history": path_hist,
