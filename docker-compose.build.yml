@@ -1,0 +1,18 @@
+# 备选：直接在 NAS 上从源码构建（不走 GitHub 镜像时使用）
+# 命令：docker compose -f docker-compose.build.yml up -d --build
+services:
+  usvault:
+    build:
+      context: .
+      args:
+        USE_CN_MIRROR: "1"
+    image: usvault:local
+    container_name: usvault
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - APP_PASSWORD=请改成你的密码
+      - TZ=Asia/Shanghai
+    volumes:
+      - /vol1/1000/超声影像库:/data
