@@ -1,10 +1,9 @@
 # 飞牛 fnOS 部署：Docker → Compose → 新增项目，直接粘贴以下内容即可（无需拷贝源码到 NAS）
-# 1. 把 <你的github用户名> 改成你自己的 GitHub 用户名（全部小写）
-# 2. 修改 APP_PASSWORD（登录密码）和 volumes 左侧的 NAS 数据目录路径
+# 修改 APP_PASSWORD（登录密码）和 volumes 左侧的 NAS 数据目录路径即可启动
 # 更新：在飞牛 Docker → Compose 中点击该项目「更新 / 拉取最新镜像并重建」即可
 services:
   usvault:
-    image: ghcr.io/<你的github用户名>/usvault:latest
+    image: ghcr.io/sonicx2025/usvault:latest
     container_name: usvault
     restart: unless-stopped
     ports:
