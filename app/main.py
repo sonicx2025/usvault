@@ -17,7 +17,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
 
@@ -136,8 +136,20 @@ with db() as _c:
     for _col in ("codec", "web_path", "web_status"):
         if _col not in _cols:
             _c.execute(f"ALTER TABLE files ADD COLUMN {_col} TEXT DEFAULT ''")
-    if "extra" not in {r[1] for r in _c.execute("PRAGMA table_info(records)")}:
-        _c.execute("ALTER TABLE records ADD COLUMN extra TEXT DEFAULT '{}'")
+    _rcols = {r[1] for r in _c.execute("PRAGMA table_info(records)")}
+    for _col, _ddl in (
+        ("extra", "TEXT DEFAULT '{}'"),
+        ("series_id", "TEXT DEFAULT ''"),
+        ("followup_date", "TEXT DEFAULT ''"),
+        ("followup_note", "TEXT DEFAULT ''"),
+        ("followup_status", "TEXT DEFAULT ''"),
+        ("followup_done_at", "TEXT DEFAULT ''"),
+        ("followup_next_id", "INTEGER"),
+    ):
+        if _col not in _rcols:
+            _c.execute(f"ALTER TABLE records ADD COLUMN {_col} {_ddl}")
+    _c.execute("CREATE INDEX IF NOT EXISTS idx_records_series ON records(series_id)")
+    _c.execute("CREATE INDEX IF NOT EXISTS idx_records_followup ON records(followup_status, followup_date)")
 
 
 def now_str() -> str:
@@ -178,7 +190,10 @@ async def auth_middleware(request: Request, call_next):
         or path.startswith("/media/") or path.startswith("/thumb/")
     if protected and not check_token(request.cookies.get(COOKIE)):
         return JSONResponse({"detail": "未登录"}, status_code=401)
-    return await call_next(request)
+    resp = await call_next(request)
+    if path == "/" or path.endswith((".html", ".js", ".css", ".webmanifest")):
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
 
 
 @app.post("/api/login")
@@ -595,6 +610,113 @@ def file_dict(row) -> dict:
     return d
 
 
+# ---------------------------------------------------------------- 随访与复查时间线
+FOLLOWUP_STATUSES = {"", "pending", "done", "cancelled"}
+
+
+def followup_settings(conn) -> dict:
+    row = conn.execute("SELECT value FROM settings WHERE key='followup_settings'").fetchone()
+    saved = json.loads(row[0]) if row else {}
+    try:
+        lead = int(saved.get("lead_days", 7))
+    except (TypeError, ValueError):
+        lead = 7
+    return {"lead_days": max(0, min(lead, 365))}
+
+
+def followup_summary(conn) -> dict:
+    lead = followup_settings(conn)["lead_days"]
+    today_d = date.today()
+    today_s = today_d.isoformat()
+    limit_s = (today_d + timedelta(days=lead)).isoformat()
+    overdue = conn.execute(
+        "SELECT COUNT(*) FROM records WHERE followup_status='pending' AND followup_date<>'' AND followup_date<?",
+        (today_s,)).fetchone()[0]
+    due_soon = conn.execute(
+        "SELECT COUNT(*) FROM records WHERE followup_status='pending' AND followup_date>=? AND followup_date<=?",
+        (today_s, limit_s)).fetchone()[0]
+    pending_total = conn.execute(
+        "SELECT COUNT(*) FROM records WHERE followup_status='pending' AND followup_date<>''").fetchone()[0]
+    return {
+        "lead_days": lead,
+        "today": today_s,
+        "overdue": overdue,
+        "due_soon": due_soon,
+        "alert_count": overdue + due_soon,
+        "pending_total": pending_total,
+    }
+
+
+def clean_followup(m: dict, existing: Optional[dict] = None) -> dict:
+    out = {}
+    if "followup_note" in m:
+        out["followup_note"] = str(m.get("followup_note") or "").strip()[:500]
+    if "followup_date" in m:
+        fd = str(m.get("followup_date") or "").strip()
+        if not fd:
+            out["followup_date"] = ""
+            out["followup_status"] = ""
+            out["followup_done_at"] = ""
+            out["followup_next_id"] = None
+        else:
+            try:
+                fd = date.fromisoformat(fd).isoformat()
+            except ValueError:
+                raise HTTPException(400, "随访日期格式错误")
+            out["followup_date"] = fd
+            if "followup_status" not in m:
+                if (not existing
+                        or existing.get("followup_date") != fd
+                        or existing.get("followup_status") not in ("pending", "done", "cancelled")):
+                    out["followup_status"] = "pending"
+                    out["followup_done_at"] = ""
+    if "followup_status" in m:
+        st = str(m.get("followup_status") or "").strip()
+        if st not in FOLLOWUP_STATUSES:
+            raise HTTPException(400, "随访状态无效")
+        out["followup_status"] = st
+        if st in ("done", "cancelled"):
+            out["followup_done_at"] = now_str()
+        elif st == "pending":
+            out["followup_done_at"] = ""
+        elif st == "":
+            out["followup_date"] = ""
+            out["followup_done_at"] = ""
+            out["followup_next_id"] = None
+    return out
+
+
+def series_records(conn, series_id: str) -> List[dict]:
+    if not series_id:
+        return []
+    rows = conn.execute(
+        "SELECT * FROM records WHERE series_id=? ORDER BY exam_date ASC, id ASC",
+        (series_id,)).fetchall()
+    out = []
+    for r in rows:
+        item = {
+            "id": r["id"],
+            "exam_date": r["exam_date"],
+            "title": r["title"],
+            "body_part": r["body_part"],
+            "patient_name": r["patient_name"],
+            "diagnosis": r["diagnosis"],
+            "notes": r["notes"],
+            "extra": parse_extra(r["extra"]),
+            "followup_date": r["followup_date"] or "",
+            "followup_status": r["followup_status"] or "",
+            "followup_note": r["followup_note"] or "",
+        }
+        item["tags"] = [x[0] for x in conn.execute(
+            "SELECT tag FROM record_tags WHERE record_id=? ORDER BY rowid", (r["id"],))]
+        files = [file_dict(f) for f in conn.execute(
+            "SELECT * FROM files WHERE record_id=? ORDER BY sort, id", (r["id"],))]
+        item["files"] = files
+        item["cover"] = next((f["thumb"] for f in files if f["thumb"]), None)
+        out.append(item)
+    return out
+
+
 def record_detail(conn, record_id: int) -> dict:
     r = conn.execute("SELECT * FROM records WHERE id=?", (record_id,)).fetchone()
     if not r:
@@ -605,6 +727,13 @@ def record_detail(conn, record_id: int) -> dict:
         "SELECT tag FROM record_tags WHERE record_id=? ORDER BY rowid", (record_id,))]
     d["files"] = [file_dict(f) for f in conn.execute(
         "SELECT * FROM files WHERE record_id=? ORDER BY sort, id", (record_id,))]
+    d["series"] = series_records(conn, d.get("series_id") or "")
+    d["followup_next"] = None
+    if d.get("followup_next_id"):
+        nx = conn.execute("SELECT id, exam_date, title, body_part FROM records WHERE id=?",
+                          (d["followup_next_id"],)).fetchone()
+        if nx:
+            d["followup_next"] = dict(nx)
     return d
 
 
@@ -623,13 +752,13 @@ def trash_file(rel_path: str, file_id: int):
 # ---------------------------------------------------------------- 记录 API
 @app.get("/api/records")
 def list_records(request: Request, q: str = "", date_from: str = "", date_to: str = "",
-                 body_part: str = "", tag: str = "", kind: str = "", page: int = 1,
-                 page_size: int = 40):
+                 body_part: str = "", tag: str = "", kind: str = "", followup: str = "",
+                 page: int = 1, page_size: int = 40):
     where, params = [], []
     for kw in q.split():
         like = "%" + kw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         cols = ["r.title", "r.body_part", "r.patient_name", "r.patient_id",
-                "r.diagnosis", "r.notes", "r.extra"]
+                "r.diagnosis", "r.notes", "r.followup_note", "r.extra"]
         cond = " OR ".join(f"{c} LIKE ? ESCAPE '\\'" for c in cols)
         cond += " OR EXISTS(SELECT 1 FROM record_tags t WHERE t.record_id=r.id AND t.tag LIKE ? ESCAPE '\\')"
         cond += " OR EXISTS(SELECT 1 FROM files f WHERE f.record_id=r.id AND f.orig_name LIKE ? ESCAPE '\\')"
@@ -651,6 +780,15 @@ def list_records(request: Request, q: str = "", date_from: str = "", date_to: st
     qp = request.query_params
     with db() as conn:
         fields = {f["id"]: f for f in load_fields(conn)}
+        lead_days = followup_settings(conn)["lead_days"]
+    if followup == "pending":
+        where.append("r.followup_status='pending' AND r.followup_date<>''")
+    elif followup == "overdue":
+        where.append("r.followup_status='pending' AND r.followup_date<>'' AND r.followup_date<?")
+        params.append(date.today().isoformat())
+    elif followup == "due":
+        where.append("r.followup_status='pending' AND r.followup_date<>'' AND r.followup_date<=?")
+        params.append((date.today() + timedelta(days=lead_days)).isoformat())
     for fid, f in fields.items():
         path = f"$.f{fid}"
         v = qp.get(f"cf{fid}", "").strip()
@@ -689,7 +827,10 @@ def list_records(request: Request, q: str = "", date_from: str = "", date_to: st
                 (SELECT COUNT(*) FROM files f WHERE f.record_id=r.id AND f.kind='video') AS n_video,
                 (SELECT f.id FROM files f WHERE f.record_id=r.id AND f.has_thumb=1
                     ORDER BY f.sort, f.id LIMIT 1) AS cover_id,
-                (SELECT GROUP_CONCAT(tag, '\x1f') FROM record_tags t WHERE t.record_id=r.id) AS tag_str
+                (SELECT GROUP_CONCAT(tag, '\x1f') FROM record_tags t WHERE t.record_id=r.id) AS tag_str,
+                CASE WHEN r.series_id<>'' THEN
+                    (SELECT COUNT(*) FROM records s WHERE s.series_id=r.series_id)
+                ELSE 0 END AS series_count
             FROM records r {wsql}
             ORDER BY r.exam_date DESC, r.id DESC LIMIT ? OFFSET ?""",
             params + [page_size, (page - 1) * page_size]).fetchall()
@@ -719,12 +860,37 @@ def create_record(meta: str = Form("{}"), files: List[UploadFile] = File(default
     data.setdefault("exam_date", date.today().isoformat())
     if not data["exam_date"]:
         data["exam_date"] = date.today().isoformat()
+    data.update(clean_followup(m))
+    from_id = m.get("from_record_id")
+    try:
+        from_id = int(from_id) if from_id not in (None, "", 0, "0") else None
+    except (TypeError, ValueError):
+        from_id = None
     with db() as conn:
+        src = None
+        if from_id:
+            src = conn.execute(
+                "SELECT id, series_id, followup_status FROM records WHERE id=?",
+                (from_id,)).fetchone()
+            if src:
+                data["series_id"] = src["series_id"] or f"S{src['id']:06d}"
         cols = list(data.keys()) + ["extra", "created_at", "updated_at"]
         vals = list(data.values()) + [merge_extra(conn, m.get("extra")), now_str(), now_str()]
         cur = conn.execute(
             f"INSERT INTO records({','.join(cols)}) VALUES ({','.join('?' * len(cols))})", vals)
         rid = cur.lastrowid
+        if src:
+            sid = data["series_id"]
+            if src["followup_status"] == "pending":
+                conn.execute(
+                    "UPDATE records SET series_id=?, followup_status='done', followup_done_at=?,"
+                    " followup_next_id=?, updated_at=? WHERE id=?",
+                    (sid, now_str(), rid, now_str(), src["id"]))
+            else:
+                conn.execute(
+                    "UPDATE records SET series_id=?, followup_next_id=COALESCE(followup_next_id, ?)"
+                    " WHERE id=?",
+                    (sid, rid, src["id"]))
         set_tags(conn, rid, parse_tags(m.get("tags")))
         save_uploads(conn, rid, data["exam_date"], files)
         return record_detail(conn, rid)
@@ -735,9 +901,12 @@ async def update_record(record_id: int, request: Request):
     m = await request.json()
     data = clean_meta(m)
     with db() as conn:
-        old = conn.execute("SELECT extra FROM records WHERE id=?", (record_id,)).fetchone()
+        old = conn.execute(
+            "SELECT extra, followup_date, followup_status FROM records WHERE id=?",
+            (record_id,)).fetchone()
         if not old:
             raise HTTPException(404, "记录不存在")
+        data.update(clean_followup(m, dict(old)))
         if "extra" in m:
             data["extra"] = merge_extra(conn, m["extra"], parse_extra(old["extra"]))
         if data:
@@ -756,8 +925,135 @@ def delete_record(record_id: int):
                              (record_id,)).fetchall()
         for f in files:
             trash_file(f["rel_path"], f["id"])
+        conn.execute("UPDATE records SET followup_next_id=NULL WHERE followup_next_id=?",
+                     (record_id,))
         conn.execute("DELETE FROM records WHERE id=?", (record_id,))
     return {"ok": True}
+
+
+@app.put("/api/records/{record_id}/followup")
+async def update_followup(record_id: int, request: Request):
+    m = await request.json()
+    with db() as conn:
+        old = conn.execute(
+            "SELECT followup_date, followup_status FROM records WHERE id=?",
+            (record_id,)).fetchone()
+        if not old:
+            raise HTTPException(404, "记录不存在")
+        data = clean_followup(m, dict(old))
+        if data:
+            sets = ", ".join(f"{k}=?" for k in data) + ", updated_at=?"
+            conn.execute(f"UPDATE records SET {sets} WHERE id=?",
+                         list(data.values()) + [now_str(), record_id])
+        return record_detail(conn, record_id)
+
+
+@app.post("/api/records/{record_id}/link")
+async def link_series(record_id: int, request: Request):
+    body = await request.json()
+    try:
+        target_id = int(body.get("target_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "请选择要关联的记录")
+    if target_id == record_id:
+        raise HTTPException(400, "不能关联自身")
+    with db() as conn:
+        a = conn.execute("SELECT id, series_id FROM records WHERE id=?", (record_id,)).fetchone()
+        b = conn.execute("SELECT id, series_id FROM records WHERE id=?", (target_id,)).fetchone()
+        if not a or not b:
+            raise HTTPException(404, "记录不存在")
+        sa, sb = a["series_id"] or "", b["series_id"] or ""
+        if sa and sb and sa != sb:
+            conn.execute("UPDATE records SET series_id=? WHERE series_id=?", (sa, sb))
+        else:
+            sid = sa or sb or f"S{min(record_id, target_id):06d}"
+            conn.execute("UPDATE records SET series_id=? WHERE id IN (?,?)",
+                         (sid, record_id, target_id))
+        return record_detail(conn, record_id)
+
+
+@app.post("/api/records/{record_id}/unlink")
+def unlink_series(record_id: int):
+    with db() as conn:
+        r = conn.execute("SELECT series_id FROM records WHERE id=?", (record_id,)).fetchone()
+        if not r:
+            raise HTTPException(404, "记录不存在")
+        sid = r["series_id"] or ""
+        conn.execute("UPDATE records SET series_id='' WHERE id=?", (record_id,))
+        if sid:
+            left = conn.execute("SELECT COUNT(*) FROM records WHERE series_id=?", (sid,)).fetchone()[0]
+            if left <= 1:
+                conn.execute("UPDATE records SET series_id='' WHERE series_id=?", (sid,))
+        return record_detail(conn, record_id)
+
+
+@app.get("/api/followups")
+def list_followups(status: str = "pending"):
+    with db() as conn:
+        summary = followup_summary(conn)
+        today_d = date.today()
+        if status == "all":
+            wsql, params = "WHERE r.followup_status IN ('pending','done','cancelled')", []
+            order = "CASE r.followup_status WHEN 'pending' THEN 0 WHEN 'done' THEN 1 ELSE 2 END, r.followup_date ASC, r.id DESC"
+        elif status in ("done", "cancelled"):
+            wsql, params = "WHERE r.followup_status=?", [status]
+            order = "r.followup_done_at DESC, r.followup_date DESC, r.id DESC"
+        else:
+            wsql, params = "WHERE r.followup_status='pending' AND r.followup_date<>''", []
+            order = "r.followup_date ASC, r.id ASC"
+        rows = conn.execute(
+            f"""SELECT r.*,
+                (SELECT COUNT(*) FROM files f WHERE f.record_id=r.id AND f.kind='image') AS n_image,
+                (SELECT COUNT(*) FROM files f WHERE f.record_id=r.id AND f.kind='video') AS n_video,
+                (SELECT f.id FROM files f WHERE f.record_id=r.id AND f.has_thumb=1
+                    ORDER BY f.sort, f.id LIMIT 1) AS cover_id,
+                (SELECT GROUP_CONCAT(tag, '\x1f') FROM record_tags t WHERE t.record_id=r.id) AS tag_str,
+                CASE WHEN r.series_id<>'' THEN
+                    (SELECT COUNT(*) FROM records s WHERE s.series_id=r.series_id)
+                ELSE 0 END AS series_count,
+                nx.exam_date AS next_exam_date,
+                nx.title AS next_title
+            FROM records r
+            LEFT JOIN records nx ON nx.id = r.followup_next_id
+            {wsql}
+            ORDER BY {order}""",
+            params).fetchall()
+    items = []
+    for r in rows:
+        d = dict(r)
+        d["tags"] = d.pop("tag_str").split("\x1f") if d.get("tag_str") else []
+        d["extra"] = parse_extra(d.get("extra"))
+        d["cover"] = f"/thumb/{d['cover_id']}" if d["cover_id"] else None
+        nx_date = d.pop("next_exam_date", None)
+        nx_title = d.pop("next_title", None)
+        d["followup_next"] = ({"id": d["followup_next_id"], "exam_date": nx_date, "title": nx_title}
+                              if d.get("followup_next_id") and nx_date else None)
+        try:
+            d["days_left"] = (date.fromisoformat(d["followup_date"]) - today_d).days if d["followup_date"] else None
+        except ValueError:
+            d["days_left"] = None
+        items.append(d)
+    return {"summary": summary, "items": items}
+
+
+@app.get("/api/settings/followup")
+def get_followup_settings():
+    with db() as conn:
+        return followup_settings(conn)
+
+
+@app.put("/api/settings/followup")
+async def update_followup_settings(request: Request):
+    body = await request.json()
+    try:
+        lead = int(body.get("lead_days", 7))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "提前提醒天数需要是整数")
+    lead = max(0, min(lead, 365))
+    with db() as conn:
+        conn.execute("INSERT OR REPLACE INTO settings(key, value) VALUES ('followup_settings', ?)",
+                     (json.dumps({"lead_days": lead}),))
+        return followup_settings(conn)
 
 
 @app.post("/api/records/{record_id}/files")
@@ -797,8 +1093,10 @@ def meta():
                       (SELECT COALESCE(SUM(size),0) FROM files) AS bytes""").fetchone())
         builtin = builtin_settings(conn)
         custom = load_fields(conn, active_only=True)
+        fu = followup_summary(conn)
     return {"body_parts": parts, "tags": tags, "stats": stats,
             "fields": {"builtin": builtin, "custom": custom},
+            "followup": fu,
             "video_thumbs": bool(FFMPEG), "transcode": bool(H264_ENC),
             "version": os.environ.get("APP_VERSION", "dev")}
 

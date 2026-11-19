@@ -1,5 +1,5 @@
 // Service Worker：缓存应用外壳，数据/影像始终走网络（保证与 NAS 一致）
-const CACHE = 'usvault-v2';
+const CACHE = 'usvault-v3';
 const SHELL = ['/', '/index.html', '/style.css', '/app.js', '/manifest.webmanifest',
   '/icons/icon-192.png', '/icons/icon-512.png', '/icons/apple-touch-icon.png'];
 
@@ -16,9 +16,9 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;
   if (/^\/(api|media|thumb)\//.test(url.pathname)) return; // 不缓存数据与影像
-  // 网络优先，离线时回退缓存
+  // 网络优先（绕过旧 HTTP 缓存），离线时回退缓存
   e.respondWith(
-    fetch(e.request).then((r) => {
+    fetch(new Request(e.request, { cache: 'no-cache' })).then((r) => {
       const copy = r.clone();
       caches.open(CACHE).then((c) => c.put(e.request, copy));
       return r;

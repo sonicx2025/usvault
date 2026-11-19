@@ -7,7 +7,7 @@ const DEFAULT_PARTS = ['甲状腺', '乳腺', '肝脏', '胆囊', '胰腺', '脾
   '子宫附件', '产科', '心脏', '颈部血管', '下肢血管', '浅表淋巴结', '肌骨', '阴囊', '其他'];
 let META = { body_parts: [], tags: [], stats: {} };
 let DEFAULT_PW = false;
-const EMPTY_LIST = { q: '', date_from: '', date_to: '', body_part: '', tag: '', kind: '', page: 1, cf: {} };
+const EMPTY_LIST = { q: '', date_from: '', date_to: '', body_part: '', tag: '', kind: '', followup: '', page: 1, cf: {} };
 let listState = { ...EMPTY_LIST, cf: {} };
 
 // ------------------------------------------------------------ 工具
@@ -16,6 +16,56 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
 const today = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 const fmtSize = (b) => b > 1 << 30 ? (b / (1 << 30)).toFixed(2) + ' GB' : b > 1 << 20 ? (b / (1 << 20)).toFixed(1) + ' MB' : Math.ceil(b / 1024) + ' KB';
 const fmtDur = (s) => s ? `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}` : '';
+
+function daysUntil(iso) {
+  if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return null;
+  const [y1, m1, d1] = iso.split('-').map(Number);
+  const [y0, m0, d0] = today().split('-').map(Number);
+  return Math.round((Date.UTC(y1, m1 - 1, d1) - Date.UTC(y0, m0 - 1, d0)) / 86400000);
+}
+
+function addMonths(iso, months) {
+  const base = /^\d{4}-\d{2}-\d{2}$/.test(iso || '') ? iso : today();
+  const [y, m, d] = base.split('-').map(Number);
+  const total = y * 12 + (m - 1) + months;
+  const ny = Math.floor(total / 12), nm = (total % 12) + 1;
+  const lastDay = new Date(Date.UTC(ny, nm, 0)).getUTCDate();
+  return `${ny}-${String(nm).padStart(2, '0')}-${String(Math.min(d, lastDay)).padStart(2, '0')}`;
+}
+
+function fuInfo(r) {
+  const st = r.followup_status || '';
+  const lead = META.followup?.lead_days ?? 7;
+  if (st === 'pending' && r.followup_date) {
+    const days = r.days_left !== undefined && r.days_left !== null ? r.days_left : daysUntil(r.followup_date);
+    if (days < 0) return { text: `逾期 ${-days} 天`, cls: 'fu-over', bucket: 'over', days };
+    if (days === 0) return { text: '今天随访', cls: 'fu-due', bucket: 'due', days };
+    if (days <= lead) return { text: `${days} 天后随访`, cls: 'fu-due', bucket: 'due', days };
+    return { text: `随访 ${r.followup_date}`, cls: 'fu-plan', bucket: 'plan', days };
+  }
+  if (st === 'done') return { text: '已随访', cls: 'fu-done', bucket: 'done', days: null };
+  if (st === 'cancelled') return { text: '已取消随访', cls: 'fu-muted', bucket: 'cancelled', days: null };
+  return null;
+}
+
+function bindQuickDates(container, input, baseFn) {
+  container.querySelectorAll('button[data-m]').forEach((b) => {
+    b.onclick = () => {
+      const m = Number(b.dataset.m);
+      input.value = m === 0 ? '' : addMonths(baseFn ? baseFn() : today(), m);
+    };
+  });
+}
+
+function quickDatesHtml(showClear = true) {
+  return `<div class="quick-dates">
+    <button type="button" class="btn sm ghost" data-m="1">+1个月</button>
+    <button type="button" class="btn sm ghost" data-m="3">+3个月</button>
+    <button type="button" class="btn sm ghost" data-m="6">+6个月</button>
+    <button type="button" class="btn sm ghost" data-m="12">+1年</button>
+    ${showClear ? '<button type="button" class="btn sm ghost" data-m="0">清除</button>' : ''}
+  </div>`;
+}
 
 function toast(msg, ms = 2200) {
   const t = $('#toast'); t.textContent = msg; t.hidden = false;
@@ -55,6 +105,17 @@ async function loadMeta() {
   const parts = [...new Set([...META.body_parts.map((p) => p.name), ...DEFAULT_PARTS])];
   $('#dlParts').innerHTML = parts.map((p) => `<option value="${esc(p)}">`).join('');
   $('#dlTags').innerHTML = META.tags.map((t) => `<option value="${esc(t.name)}">`).join('');
+  const b = $('#fuBadge');
+  const fu = META.followup || {};
+  if (b) {
+    if (fu.alert_count > 0) {
+      b.textContent = fu.alert_count > 99 ? '99+' : String(fu.alert_count);
+      b.classList.toggle('soon', !fu.overdue);
+      b.hidden = false;
+    } else {
+      b.hidden = true;
+    }
+  }
 }
 
 // ------------------------------------------------------------ 登录
@@ -87,9 +148,13 @@ async function route() {
   try {
     let m;
     if (h === '/' || h.startsWith('/?')) return await viewList();
-    if (h === '/new') return viewForm(null);
+    if (h === '/followups') return await viewFollowups();
+    if (h === '/new' || h.startsWith('/new?')) {
+      const qs = new URLSearchParams(h.split('?')[1] || '');
+      return await viewForm(null, qs.get('from') ? +qs.get('from') : null);
+    }
     if (h === '/settings') return await viewSettings();
-    if ((m = h.match(/^\/r\/(\d+)\/edit$/))) return viewForm(await api(`/api/records/${m[1]}`));
+    if ((m = h.match(/^\/r\/(\d+)\/edit$/))) return await viewForm(await api(`/api/records/${m[1]}`), null);
     if ((m = h.match(/^\/r\/(\d+)$/))) return await viewDetail(+m[1]);
     location.hash = '#/';
   } catch (err) {
@@ -165,9 +230,18 @@ function cfFilter(f, cf) {
 async function viewList() {
   const s = listState;
   const kindOpts = [['', '全部类型'], ['image', '含图片'], ['video', '含视频']];
+  const fuOpts = [['', '全部随访'], ['pending', '待随访'], ['due', '近期到期/逾期'], ['overdue', '仅已逾期']];
   const cfs = CF().filter((f) => f.filterable);
+  const fu = META.followup || {};
+  const fuParts = [];
+  if (fu.overdue) fuParts.push(`<strong>${fu.overdue}</strong> 条已逾期`);
+  if (fu.due_soon) fuParts.push(`<strong>${fu.due_soon}</strong> 条 ${fu.lead_days ? `${fu.lead_days} 天内` : '今天'}到期`);
   app.innerHTML = `
     ${DEFAULT_PW ? '<div class="warn">⚠️ 当前使用默认密码 admin，请在部署配置中修改 APP_PASSWORD。</div>' : ''}
+    ${fu.alert_count > 0 ? `<div class="fu-banner ${fu.overdue ? 'over' : ''}">
+      <span>📅 随访提醒：${fuParts.join('，')}</span>
+      <a class="btn sm" href="#/followups">去随访中心 →</a>
+    </div>` : ''}
     <form class="search" id="searchForm">
       <div class="search-main">
         <input type="search" name="q" placeholder="搜索全部文字信息与文件名…（空格分隔多个关键词）" value="${esc(s.q)}">
@@ -181,6 +255,9 @@ async function viewList() {
         </select></div>`}
         <div><label>类型</label><select name="kind">
           ${kindOpts.map(([v, t]) => `<option value="${v}" ${v === s.kind ? 'selected' : ''}>${t}</option>`).join('')}
+        </select></div>
+        <div><label>随访</label><select name="followup">
+          ${fuOpts.map(([v, t]) => `<option value="${v}" ${v === s.followup ? 'selected' : ''}>${t}</option>`).join('')}
         </select></div>
         ${cfs.map((f) => cfFilter(f, s.cf)).join('')}
       </div>
@@ -196,7 +273,7 @@ async function viewList() {
   const form = $('#searchForm');
   const apply = () => {
     const fd = new FormData(form);
-    for (const k of ['q', 'date_from', 'date_to', 'body_part', 'kind']) s[k] = (fd.get(k) || '').trim();
+    for (const k of ['q', 'date_from', 'date_to', 'body_part', 'kind', 'followup']) s[k] = (fd.get(k) || '').trim();
     s.cf = {};
     for (const [k, v] of fd.entries()) if (/^cf\d+/.test(k) && String(v).trim()) s.cf[k] = String(v).trim();
     s.page = 1; loadPage(true);
@@ -229,7 +306,7 @@ async function loadPage(reset) {
   if (!d.total) grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1">
       ${META.stats.records ? '没有找到匹配的记录' : '还没有记录，点击右上角「新建记录」开始吧'}</div>`;
   $('#resultInfo').textContent = `找到 ${d.total} 条`;
-  $('#resetWrap').hidden = !(s.date_from || s.date_to || s.body_part || s.tag || s.kind || Object.keys(s.cf).length);
+  $('#resetWrap').hidden = !(s.date_from || s.date_to || s.body_part || s.tag || s.kind || s.followup || Object.keys(s.cf).length);
   $('#moreBtn').hidden = d.page * d.page_size >= d.total;
 }
 
@@ -241,26 +318,51 @@ function cardHtml(r) {
     const v = fmtVal(f, r.extra[f.key]);
     return v ? `${esc(f.label)}：${esc(v)}` : '';
   }).filter(Boolean).join(' · ');
+  const fu = r.followup_status === 'pending' ? fuInfo(r) : null;
   return `<a class="card" href="#/r/${r.id}">
     <div class="cover ${r.cover ? '' : 'empty'}" ${r.cover ? `style="background-image:url('${r.cover}')"` : ''}>
       ${r.cover ? '' : '无预览'}
+      ${r.series_count > 1 ? `<span class="card-tl">🕒 ${r.series_count}次</span>` : ''}
       <div class="badges">${r.n_image ? `<span class="badge">🖼 ${r.n_image}</span>` : ''}${r.n_video ? `<span class="badge">▶ ${r.n_video}</span>` : ''}</div>
     </div>
     <div class="body"><div class="t">${esc(title)}</div><div class="sub">${esc(sub)}</div>
       ${extra ? `<div class="sub">${extra}</div>` : ''}
+      ${fu ? `<div style="margin-top:6px"><span class="fu-pill ${fu.cls}">📅 ${esc(fu.text)}</span></div>` : ''}
       ${!bh('tags') && r.tags.length ? `<div class="tagrow">${r.tags.slice(0, 4).map((t) => `<span class="tag">#${esc(t)}</span>`).join('')}</div>` : ''}
     </div></a>`;
 }
 
 // ------------------------------------------------------------ 新建 / 编辑
-function viewForm(rec) {
+async function viewForm(rec, fromId = null) {
   const isEdit = !!rec;
-  const r = rec || { exam_date: today(), tags: [], extra: {} };
+  let src = null;
+  if (!isEdit && fromId) src = await api(`/api/records/${fromId}`);
+  const r = rec || (src ? {
+    exam_date: today(),
+    body_part: src.body_part,
+    title: src.title,
+    patient_name: src.patient_name,
+    patient_id: src.patient_id,
+    sex: src.sex,
+    age: src.age,
+    tags: src.tags || [],
+    extra: {},
+  } : { exam_date: today(), tags: [], extra: {} });
   const v = (k) => esc(r[k] || '');
   const fld = (k, html, cls = '') => (bh(k) ? '' : `<div class="${cls}"><label>${bl(k)}</label>${html}</div>`);
   const cfs = CF();
+  const srcExtra = src ? CF().map((f) => {
+    const val = fmtVal(f, src.extra[f.key]);
+    return val ? `${f.label}：${val}` : '';
+  }).filter(Boolean).join(' · ') : '';
   app.innerHTML = `
-    <div class="page-head"><h2>${isEdit ? '编辑记录' : '新建记录'}</h2></div>
+    <div class="page-head"><h2>${isEdit ? '编辑记录' : (src ? '录入复查记录' : '新建记录')}</h2></div>
+    ${src ? `<div class="ref-box">
+      <div><strong>🕒 关联前次检查：</strong>${esc(src.exam_date)} · ${esc(src.title || src.body_part || '未命名记录')} ${src.patient_name ? `(${esc(src.patient_name)})` : ''}</div>
+      ${src.diagnosis || srcExtra ? `<div class="ref-sub">${esc([src.diagnosis && '上次诊断：' + src.diagnosis, srcExtra].filter(Boolean).join('\n'))}</div>` : ''}
+      ${src.followup_note ? `<div class="ref-sub">随访重点：${esc(src.followup_note)}</div>` : ''}
+      <div class="ref-sub">保存后将自动加入同一随访时间线，并把前次待随访计划标记为「已完成」。</div>
+    </div>` : ''}
     <form id="recForm">
       <div class="panel form-grid">
         <div><label>检查日期 *</label><input type="date" name="exam_date" value="${v('exam_date')}" required></div>
@@ -277,21 +379,31 @@ function viewForm(rec) {
       ${cfs.length ? `<div class="panel form-grid">
         ${cfs.map((f) => `<div class="${['textarea', 'multiselect'].includes(f.type) ? 'full' : ''}">
           <label>${esc(f.label)}</label>${cfInput(f, r.extra[f.key])}</div>`).join('')}
-      </div>` : `<div class="muted" style="margin:-4px 2px 14px;font-size:13px">需要更多字段？到 <a href="#/settings">⚙ 字段设置</a> 添加自定义字段。</div>`}
+      </div>` : `<div class="muted" style="margin:-4px 2px 14px;font-size:13px">需要更多字段？到 <a href="#/settings">⚙ 设置</a> 添加自定义字段。</div>`}
+      <div class="panel" id="fuPanel">
+        <h3 style="margin:0 0 10px;font-size:15px">📅 随访计划（可选）</h3>
+        <div class="form-grid">
+          <div><label>下次随访日期</label><input type="date" name="followup_date" value="${v('followup_date')}">${quickDatesHtml(true)}</div>
+          <div><label>随访重点 / 备注</label><input name="followup_note" value="${v('followup_note')}" placeholder="如：复查右叶结节大小、边界及血流"></div>
+        </div>
+      </div>
       ${isEdit ? '' : `<div class="panel">${dropzoneHtml()}</div>`}
       <div class="actions">
-        <a class="btn ghost" href="${isEdit ? `#/r/${r.id}` : '#/'}">取消</a>
+        <a class="btn ghost" href="${isEdit ? `#/r/${r.id}` : (src ? `#/r/${src.id}` : '#/')}">取消</a>
         <button class="btn primary" id="saveBtn">${isEdit ? '保存修改' : '保存记录'}</button>
       </div>
     </form>`;
 
+  const form = $('#recForm');
+  bindQuickDates($('#fuPanel'), form.followup_date, () => form.exam_date.value || today());
   const picked = isEdit ? null : bindDropzone();
-  $('#recForm').onsubmit = async (e) => {
+  form.onsubmit = async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
     const meta = {};
     for (const [k, val] of fd.entries()) if (!k.startsWith('cf_')) meta[k] = val;
     meta.extra = collectExtra(fd);
+    if (src) meta.from_record_id = src.id;
     const btn = $('#saveBtn'); btn.disabled = true;
     try {
       let res;
@@ -360,11 +472,15 @@ async function viewDetail(id) {
   const brow = (k, val, full) => (bh(k) ? '' : row(BF(k).label, val, full));
   const patient = [!bh('patient_name') && r.patient_name, !bh('sex') && r.sex,
     !bh('age') && r.age && (/\D/.test(r.age) ? r.age : r.age + '岁')].filter(Boolean).join(' · ');
+  const fu = fuInfo(r);
+  const series = r.series || [];
+  const hasSeries = series.length > 1;
   app.innerHTML = `
     <div class="page-head">
       <h2>${esc((!bh('title') && r.title) || (!bh('body_part') && r.body_part) || '未命名记录')}</h2>
       <div class="actions">
         <a class="btn ghost" href="#/">← 返回</a>
+        <a class="btn primary" href="#/new?from=${r.id}">＋ 录入复查</a>
         <a class="btn" href="#/r/${r.id}/edit">编辑</a>
         <button class="btn danger" id="delRec">删除</button>
       </div>
@@ -376,6 +492,37 @@ async function viewDetail(id) {
       ${!bh('tags') && r.tags.length ? `<div class="full"><div class="k">${bl('tags')}</div><div class="tagrow">${r.tags.map((t) => `<span class="tag">#${esc(t)}</span>`).join('')}</div></div>` : ''}
       ${brow('notes', r.notes, true)}
     </div>
+
+    <div class="panel" id="fuBox">
+      <div class="page-head" style="margin-bottom:8px">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <h2 style="font-size:16px">📅 随访计划</h2>
+          ${fu ? `<span class="fu-pill ${fu.cls}">${esc(fu.text)}</span>` : '<span class="muted" style="font-size:13px">未设置</span>'}
+        </div>
+        <div class="actions">
+          ${r.followup_status === 'pending' ? `
+            <button class="btn sm" id="fuDoneBtn">✓ 标记完成</button>
+            <button class="btn sm" id="fuEditBtn">改期 / 编辑</button>
+            <button class="btn sm ghost" id="fuCancelBtn">取消随访</button>
+          ` : `
+            <button class="btn sm" id="fuEditBtn">${r.followup_date ? '修改随访' : '＋ 设置随访'}</button>
+            ${r.followup_date && r.followup_status !== 'pending' ? '<button class="btn sm ghost" id="fuReopenBtn">重新开启</button>' : ''}
+          `}
+          ${!hasSeries ? '<button class="btn sm ghost" id="openLinkBtn">🔗 关联已有记录</button>' : ''}
+        </div>
+      </div>
+      ${r.followup_date ? `<div class="muted" style="font-size:13.5px">
+        计划日期：<strong>${esc(r.followup_date)}</strong>
+        ${r.followup_note ? ` · 备注：${esc(r.followup_note)}` : ''}
+        ${r.followup_done_at ? ` · ${r.followup_status === 'cancelled' ? '取消于' : '完成于'} ${esc(r.followup_done_at.replace('T', ' '))}` : ''}
+        ${r.followup_next ? ` · <a href="#/r/${r.followup_next.id}">查看复查记录 (${esc(r.followup_next.exam_date)}) →</a>` : ''}
+      </div>` : ''}
+      <div id="fuEditArea"></div>
+      ${!hasSeries ? '<div id="linkArea"></div>' : ''}
+    </div>
+
+    ${hasSeries ? renderTimelinePanel(r, series) : ''}
+
     <div class="panel">
       <div class="page-head" style="margin-bottom:10px"><h2 style="font-size:16px">影像 (${r.files.length})</h2></div>
       <div class="gallery" id="gallery">
@@ -390,6 +537,64 @@ async function viewDetail(id) {
       <div class="actions" style="margin-top:10px"><button class="btn primary" id="addBtn" hidden>上传新增文件</button></div>
     </div>
     <div class="stats"><span>创建于 ${esc((r.created_at || '').replace('T', ' '))}</span><span>更新于 ${esc((r.updated_at || '').replace('T', ' '))}</span></div>`;
+
+  // 随访操作
+  const saveFu = async (payload, msg) => {
+    try { await api(`/api/records/${id}/followup`, { method: 'PUT', json: payload }); await loadMeta(); toast(msg); viewDetail(id); }
+    catch (err) { toast(err.message, 4000); }
+  };
+  if ($('#fuDoneBtn')) $('#fuDoneBtn').onclick = () => saveFu({ followup_status: 'done' }, '已标记完成');
+  if ($('#fuCancelBtn')) $('#fuCancelBtn').onclick = () => saveFu({ followup_status: 'cancelled' }, '已取消随访');
+  if ($('#fuReopenBtn')) $('#fuReopenBtn').onclick = () => saveFu({ followup_status: 'pending' }, '已重新开启');
+  $('#fuEditBtn').onclick = () => {
+    const area = $('#fuEditArea');
+    if (area.innerHTML) { area.innerHTML = ''; return; }
+    area.innerHTML = `<form class="inline-edit" id="fuInlineForm">
+      <div class="form-grid">
+        <div><label>下次随访日期</label><input type="date" name="followup_date" value="${esc(r.followup_date || '')}">${quickDatesHtml(true)}</div>
+        <div><label>随访重点 / 备注</label><input name="followup_note" value="${esc(r.followup_note || '')}" placeholder="如：复查结节大小、血流"></div>
+      </div>
+      <div class="actions" style="margin-top:10px">
+        <button type="button" class="btn sm ghost" id="fuEditCancel">取消</button>
+        <button class="btn sm primary">保存随访计划</button>
+      </div>
+    </form>`;
+    const f = $('#fuInlineForm');
+    bindQuickDates(f, f.followup_date, () => r.exam_date || today());
+    $('#fuEditCancel').onclick = () => (area.innerHTML = '');
+    f.onsubmit = (e) => {
+      e.preventDefault();
+      saveFu({ followup_date: f.followup_date.value, followup_note: f.followup_note.value }, '随访计划已更新');
+    };
+  };
+
+  // 关联已有记录选择器
+  const openLinkBtn = $('#openLinkBtn');
+  if (openLinkBtn) openLinkBtn.onclick = () => openLinkPicker(r, series);
+
+  // 时间线 & 并排对比
+  if (hasSeries) {
+    const byId = Object.fromEntries(series.map((s) => [s.id, s]));
+    const tlPanel = $('#tlPanel');
+    tlPanel.onclick = (e) => {
+      const th = e.target.closest('.tl-th');
+      if (th) {
+        const recItem = byId[+th.dataset.rid];
+        if (recItem?.files?.length) openLightbox(recItem.files, +th.dataset.fi);
+      }
+    };
+    $('#cmpToggleBtn').onclick = () => {
+      const cmp = $('#cmpBox'), tl = $('#tlList');
+      const showCmp = cmp.hidden;
+      cmp.hidden = !showCmp; tl.hidden = showCmp;
+      $('#cmpToggleBtn').textContent = showCmp ? '☰ 时间线视图' : '⇄ 并排对比';
+    };
+    $('#unlinkBtn').onclick = async () => {
+      if (!confirm('把当前记录移出此随访时间线？（不会删除记录本身）')) return;
+      await api(`/api/records/${id}/unlink`, { method: 'POST' });
+      toast('已移出时间线'); viewDetail(id);
+    };
+  }
 
   $('#gallery').onclick = async (e) => {
     const del = e.target.closest('.del');
@@ -418,11 +623,237 @@ async function viewDetail(id) {
   };
 }
 
-// ------------------------------------------------------------ 字段设置
-async function viewSettings() {
-  const d = await api('/api/fields');
+function renderTimelinePanel(cur, series) {
+  const cfs = CF();
+  const activeCfs = cfs.filter((f) => series.some((s) => fmtVal(f, s.extra[f.key])));
+  const hasNotes = series.some((s) => s.notes);
+  const thumbStrip = (s) => s.files.length ? `<div class="tl-thumbs">${s.files.slice(0, 6).map((f, i) => `
+    <div class="tl-th" data-rid="${s.id}" data-fi="${i}" ${f.thumb ? `style="background-image:url('${f.thumb}')"` : ''}>
+      ${f.thumb ? '' : '文件'}${f.kind === 'video' ? '<span class="p">▶</span>' : ''}
+    </div>`).join('')}${s.files.length > 6 ? `<span class="muted" style="font-size:12px;align-self:center">+${s.files.length - 6}</span>` : ''}</div>` : '';
+  return `<div class="panel" id="tlPanel">
+    <div class="page-head" style="margin-bottom:10px">
+      <h2 style="font-size:16px">🕒 随访时间线 (${series.length} 次检查)</h2>
+      <div class="actions">
+        <button class="btn sm" id="cmpToggleBtn">⇄ 并排对比</button>
+        <button class="btn sm ghost" id="openLinkBtn">＋ 关联记录</button>
+        <button class="btn sm ghost" id="unlinkBtn">移出时间线</button>
+      </div>
+    </div>
+    <div id="linkArea"></div>
+    <div class="tl-list" id="tlList">
+      ${series.map((s, idx) => {
+        const isCur = s.id === cur.id;
+        const cfStr = cfs.map((f) => {
+          const val = fmtVal(f, s.extra[f.key]);
+          return val ? `${esc(f.label)}：<strong>${esc(val)}</strong>` : '';
+        }).filter(Boolean).join(' · ');
+        return `<div class="tl-item ${isCur ? 'cur' : ''}">
+          <div class="tl-head">
+            <div>
+              <strong>第 ${idx + 1} 次 · ${esc(s.exam_date)}</strong>
+              ${isCur ? '<span class="pill" style="color:var(--accent);border-color:var(--accent)">当前</span>' : `<a href="#/r/${s.id}" style="margin-left:6px">${esc(s.title || s.body_part || '查看详情')} →</a>`}
+            </div>
+            ${s.followup_status === 'pending' ? `<span class="fu-pill ${fuInfo(s).cls}">${esc(fuInfo(s).text)}</span>` : ''}
+          </div>
+          ${s.diagnosis ? `<div style="margin-top:4px;font-size:13.5px">${esc(s.diagnosis)}</div>` : ''}
+          ${cfStr ? `<div class="muted" style="margin-top:3px;font-size:13px">${cfStr}</div>` : ''}
+          ${thumbStrip(s)}
+        </div>`;
+      }).join('')}
+    </div>
+    <div class="cmp-wrap" id="cmpBox" hidden>
+      <table class="cmp-table">
+        <thead><tr>
+          <th class="k">对比项</th>
+          ${series.map((s, i) => `<th class="${s.id === cur.id ? 'cur' : ''}">第 ${i + 1} 次 · ${esc(s.exam_date)}${s.id === cur.id ? ' (当前)' : `<br><a href="#/r/${s.id}" style="font-weight:400;font-size:12px">打开记录 →</a>`}</th>`).join('')}
+        </tr></thead>
+        <tbody>
+          <tr><td class="k">标题 / 部位</td>${series.map((s) => `<td>${esc([s.title, s.body_part].filter(Boolean).join(' · ') || '—')}</td>`).join('')}</tr>
+          <tr><td class="k">${bl('diagnosis')}</td>${series.map((s) => `<td style="white-space:pre-wrap">${esc(s.diagnosis || '—')}</td>`).join('')}</tr>
+          ${activeCfs.map((f) => `<tr><td class="k">${esc(f.label)}</td>${series.map((s) => `<td><strong>${esc(fmtVal(f, s.extra[f.key]) || '—')}</strong></td>`).join('')}</tr>`).join('')}
+          ${hasNotes ? `<tr><td class="k">${bl('notes')}</td>${series.map((s) => `<td style="white-space:pre-wrap">${esc(s.notes || '—')}</td>`).join('')}</tr>` : ''}
+          <tr><td class="k">影像</td>${series.map((s) => `<td>${thumbStrip(s) || '<span class="muted">无</span>'}</td>`).join('')}</tr>
+        </tbody>
+      </table>
+    </div>
+  </div>`;
+}
+
+function openLinkPicker(r, series) {
+  const area = $('#linkArea');
+  if (area.innerHTML) { area.innerHTML = ''; return; }
+  const existing = new Set([r.id, ...series.map((s) => s.id)]);
+  const initQ = r.patient_name || r.body_part || '';
+  area.innerHTML = `<div class="inline-edit" style="margin-bottom:10px">
+    <div style="display:flex;gap:8px;align-items:center">
+      <input id="linkSearch" value="${esc(initQ)}" placeholder="输入患者姓名、标题或部位搜索已有记录…">
+      <button type="button" class="btn sm ghost" id="linkClose">关闭</button>
+    </div>
+    <div class="link-res" id="linkRes"><div class="muted" style="font-size:13px">搜索中…</div></div>
+  </div>`;
+  $('#linkClose').onclick = () => (area.innerHTML = '');
+  const runSearch = async () => {
+    const q = $('#linkSearch').value.trim();
+    const d = await api('/api/records?' + new URLSearchParams({ q, page_size: 20 }));
+    const list = d.items.filter((x) => !existing.has(x.id));
+    const box = $('#linkRes');
+    if (!box) return;
+    box.innerHTML = list.length ? list.map((x) => `<div class="link-opt">
+      <div><strong>${esc(x.exam_date)}</strong> · ${esc(x.title || x.body_part || '未命名')} <span class="muted">${esc([x.patient_name, x.diagnosis].filter(Boolean).join(' · '))}</span></div>
+      <button type="button" class="btn sm primary" data-tid="${x.id}">关联</button>
+    </div>`).join('') : '<div class="muted" style="font-size:13px">没有找到可关联的其他记录</div>';
+    box.querySelectorAll('button[data-tid]').forEach((b) => {
+      b.onclick = async () => {
+        try {
+          await api(`/api/records/${r.id}/link`, { method: 'POST', json: { target_id: +b.dataset.tid } });
+          toast('已关联到同一随访时间线'); viewDetail(r.id);
+        } catch (err) { toast(err.message, 4000); }
+      };
+    });
+  };
+  let deb;
+  $('#linkSearch').oninput = () => { clearTimeout(deb); deb = setTimeout(runSearch, 300); };
+  runSearch();
+}
+
+// ------------------------------------------------------------ 随访中心
+let fuTab = 'pending';
+async function viewFollowups() {
+  const d = await api(`/api/followups?status=${fuTab}`);
+  const sum = d.summary;
+  const lead = sum.lead_days;
+  const renderRow = (r) => {
+    const info = fuInfo(r);
+    const title = (!bh('title') && r.title) || (!bh('body_part') && r.body_part) || '未命名记录';
+    const sub = [r.exam_date && `检查日期 ${r.exam_date}`, !bh('body_part') && r.body_part, !bh('patient_name') && r.patient_name].filter(Boolean).join(' · ');
+    const extra = CF().filter((f) => f.show_in_card).map((f) => {
+      const val = fmtVal(f, r.extra[f.key]);
+      return val ? `${f.label}：${val}` : '';
+    }).filter(Boolean).join(' · ');
+    const cls = fuTab === 'pending' && info ? (info.bucket === 'over' ? 'over' : info.bucket === 'due' ? 'due' : '') : '';
+    return `<div class="fu-row ${cls}" data-id="${r.id}">
+      <a class="fu-thumb" href="#/r/${r.id}" ${r.cover ? `style="background-image:url('${r.cover}')"` : ''}>${r.cover ? '' : '无预览'}</a>
+      <div class="fu-body">
+        <div class="fu-top">
+          <a class="fu-title" href="#/r/${r.id}">${esc(title)}</a>
+          ${info ? `<span class="fu-pill ${info.cls}">${esc(info.text)}</span>` : ''}
+          ${r.series_count > 1 ? `<span class="pill">🕒 ${r.series_count}次</span>` : ''}
+        </div>
+        <div class="muted" style="font-size:12.5px;margin-top:2px">${esc(sub)}</div>
+        <div style="font-size:13px;margin-top:4px">
+          计划随访：<strong>${esc(r.followup_date)}</strong>
+          ${r.followup_note ? ` · ${esc(r.followup_note)}` : ''}
+        </div>
+        ${r.diagnosis || extra ? `<div class="muted" style="font-size:12.5px;margin-top:2px">${esc([r.diagnosis, extra].filter(Boolean).join(' · '))}</div>` : ''}
+        ${r.followup_next ? `<div style="font-size:12.5px;margin-top:4px"><a href="#/r/${r.followup_next.id}">已录入复查 (${esc(r.followup_next.exam_date)}) →</a></div>` : ''}
+        <div class="resched-slot"></div>
+      </div>
+      <div class="fu-act">
+        ${fuTab === 'pending' ? `
+          <a class="btn sm primary" href="#/new?from=${r.id}">录入复查</a>
+          <button class="btn sm" data-act="resched">改期</button>
+          <button class="btn sm" data-act="done">完成</button>
+          <button class="btn sm ghost" data-act="cancel">取消</button>
+        ` : `
+          <a class="btn sm" href="#/new?from=${r.id}">录入复查</a>
+          <button class="btn sm ghost" data-act="reopen">重新开启</button>
+        `}
+      </div>
+    </div>`;
+  };
+
+  let bodyHtml = '';
+  if (fuTab === 'pending') {
+    const over = d.items.filter((x) => x.days_left < 0);
+    const due = d.items.filter((x) => x.days_left >= 0 && x.days_left <= lead);
+    const plan = d.items.filter((x) => x.days_left > lead);
+    if (!d.items.length) {
+      bodyHtml = '<div class="empty-state">暂无待随访计划<br><span style="font-size:13px">在任意记录详情页或新建记录时设置「下次随访日期」即可加入提醒</span></div>';
+    } else {
+      if (over.length) bodyHtml += `<div class="fu-sec"><h3>🔴 已逾期 (${over.length})</h3>${over.map(renderRow).join('')}</div>`;
+      if (due.length) bodyHtml += `<div class="fu-sec"><h3>🟠 近期到期 · ${lead ? `今天～${lead}天内` : '今天'} (${due.length})</h3>${due.map(renderRow).join('')}</div>`;
+      if (plan.length) bodyHtml += `<div class="fu-sec"><h3>🔵 以后计划 (${plan.length})</h3>${plan.map(renderRow).join('')}</div>`;
+    }
+  } else {
+    bodyHtml = d.items.length ? d.items.map(renderRow).join('') : `<div class="empty-state">暂无${fuTab === 'done' ? '已完成' : '已取消'}的随访记录</div>`;
+  }
+
   app.innerHTML = `
-    <div class="page-head"><h2>⚙ 字段设置</h2><a class="btn ghost" href="#/">← 返回</a></div>
+    <div class="page-head">
+      <h2>📅 随访中心</h2>
+      <div class="actions">
+        <a class="btn ghost" href="#/settings">⚙ 提醒设置（提前 ${lead} 天）</a>
+        <a class="btn ghost" href="#/">← 返回</a>
+      </div>
+    </div>
+    <div class="tabs" id="fuTabs">
+      <button class="tab ${fuTab === 'pending' ? 'on' : ''}" data-t="pending">待随访 (${sum.pending_total})</button>
+      <button class="tab ${fuTab === 'done' ? 'on' : ''}" data-t="done">已完成</button>
+      <button class="tab ${fuTab === 'cancelled' ? 'on' : ''}" data-t="cancelled">已取消</button>
+    </div>
+    <div id="fuList">${bodyHtml}</div>`;
+
+  $('#fuTabs').onclick = (e) => {
+    const b = e.target.closest('button[data-t]'); if (!b) return;
+    fuTab = b.dataset.t; viewFollowups();
+  };
+  const byId = Object.fromEntries(d.items.map((x) => [x.id, x]));
+  $('#fuList').onclick = async (e) => {
+    const b = e.target.closest('button[data-act]'); if (!b) return;
+    const rowEl = b.closest('.fu-row'), id = +rowEl.dataset.id, item = byId[id], act = b.dataset.act;
+    const update = async (payload, msg) => {
+      try { await api(`/api/records/${id}/followup`, { method: 'PUT', json: payload }); await loadMeta(); toast(msg); viewFollowups(); }
+      catch (err) { toast(err.message, 4000); }
+    };
+    if (act === 'done') return update({ followup_status: 'done' }, '已标记完成');
+    if (act === 'cancel') return update({ followup_status: 'cancelled' }, '已取消随访');
+    if (act === 'reopen') return update({ followup_status: 'pending' }, '已重新开启');
+    if (act === 'resched') {
+      const slot = rowEl.querySelector('.resched-slot');
+      if (slot.innerHTML) { slot.innerHTML = ''; return; }
+      slot.innerHTML = `<form class="inline-edit">
+        <div class="form-grid">
+          <div><label>新的随访日期</label><input type="date" name="followup_date" value="${esc(item.followup_date || today())}" required>${quickDatesHtml(false)}</div>
+          <div><label>随访备注</label><input name="followup_note" value="${esc(item.followup_note || '')}"></div>
+        </div>
+        <div class="actions" style="margin-top:8px">
+          <button type="button" class="btn sm ghost" data-close>取消</button>
+          <button class="btn sm primary">保存改期</button>
+        </div>
+      </form>`;
+      const form = slot.querySelector('form');
+      bindQuickDates(form, form.followup_date, () => today());
+      form.querySelector('[data-close]').onclick = () => (slot.innerHTML = '');
+      form.onsubmit = (ev) => {
+        ev.preventDefault();
+        update({ followup_date: form.followup_date.value, followup_note: form.followup_note.value, followup_status: 'pending' }, '已改期');
+      };
+    }
+  };
+}
+
+// ------------------------------------------------------------ 设置
+async function viewSettings() {
+  const [d, fuCfg] = await Promise.all([api('/api/fields'), api('/api/settings/followup')]);
+  app.innerHTML = `
+    <div class="page-head"><h2>⚙ 设置</h2><a class="btn ghost" href="#/">← 返回</a></div>
+
+    <form class="panel" id="fuCfgForm">
+      <h2 style="font-size:16px;margin:0 0 4px">📅 随访提醒设置</h2>
+      <div class="muted" style="font-size:13px;margin-bottom:10px">到期前 N 天起（含当天及已逾期），会在顶部「随访」按钮显示红点角标，并在首页顶部提示。</div>
+      <div class="form-grid" style="align-items:end">
+        <div>
+          <label>提前提醒天数</label>
+          <div class="unit-wrap"><input type="number" min="0" max="365" name="lead_days" value="${fuCfg.lead_days}"><span>天</span></div>
+        </div>
+        <div class="quick-dates" style="margin:0">
+          ${[[0, '仅当天'], [3, '3 天'], [7, '7 天'], [14, '14 天'], [30, '30 天']].map(([n, t]) =>
+            `<button type="button" class="btn sm ghost" data-lead="${n}">${t}</button>`).join('')}
+        </div>
+      </div>
+      <div class="actions" style="margin-top:12px"><button class="btn primary">保存提醒设置</button></div>
+    </form>
 
     <div class="panel">
       <div class="page-head" style="margin-bottom:8px"><h2 style="font-size:16px">自定义字段</h2>
@@ -463,6 +894,14 @@ async function viewSettings() {
       <div class="actions" style="margin-top:12px"><button class="btn primary">保存内置字段设置</button></div>
     </form>
     <div class="muted" style="font-size:12px;text-align:center;margin-top:8px">当前版本：${esc(META.version || 'dev')}</div>`;
+
+  const fuForm = $('#fuCfgForm');
+  fuForm.querySelectorAll('button[data-lead]').forEach((b) => (b.onclick = () => (fuForm.lead_days.value = b.dataset.lead)));
+  fuForm.onsubmit = async (e) => {
+    e.preventDefault();
+    try { await api('/api/settings/followup', { method: 'PUT', json: { lead_days: +fuForm.lead_days.value } }); await loadMeta(); toast('已保存'); }
+    catch (err) { toast(err.message, 4000); }
+  };
 
   const byId = Object.fromEntries(d.custom.map((f) => [f.id, f]));
   $('#addField').onclick = () => fieldEditor(null);
